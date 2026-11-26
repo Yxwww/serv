@@ -32,6 +32,7 @@ import {
   renderSidebar,
   renderTreeFragment,
   treeRowPaths,
+  type TreeEntry,
   type TreeLevels,
 } from "./tree";
 import { entriesUnder, rowPath, scanFiles, tagRows, type Entry as Tag, type Row } from "./files";
@@ -323,24 +324,33 @@ function showAllEnabled(url: URL): boolean {
   return query !== "" && query.split("&").includes("showall");
 }
 
-function dedupeRows(rows: readonly Row[]): Row[] {
-  const unique = new Map<string, Row>();
-  for (const row of rows) unique.set(row.path, row);
-  return [...unique.values()];
+/** Tag exactly the rendered rows; a failure here must lose tags, not levels. */
+async function tagLevels(
+  root: string,
+  levels: TreeLevels,
+  extra: readonly Row[] = [],
+): Promise<Map<string, Tag>> {
+  return tagRows(root, [...treeRowPaths(levels), ...extra]);
 }
 
-/** The sidebar plus tags for exactly the rows it renders, from one read per level. */
-async function taggedTree(
+/**
+ * The levels a page shows plus tags for exactly those rows: the sidebar, and
+ * any listing rows that are not already a tree level.
+ */
+async function pageTree(
   root: string,
   rel: string,
   isDir: boolean,
+  current?: readonly TreeEntry[],
+  extra: readonly Row[] = [],
 ): Promise<{ levels: TreeLevels; tags: Map<string, Tag> }> {
-  const levels = readTreeLevels(root, rel, isDir);
-  return { levels, tags: await tagRows(root, treeRowPaths(levels)) };
+  const levels = readTreeLevels(root, rel, isDir, current);
+  const tags = await tagLevels(root, levels, extra);
+  return { levels, tags };
 }
 
 async function sidebarFor(root: string, rel: string, isDir: boolean): Promise<string> {
-  const { levels, tags } = await taggedTree(root, rel, isDir);
+  const { levels, tags } = await pageTree(root, rel, isDir);
   return renderSidebar(root, rel, tags, levels);
 }
 
@@ -390,7 +400,7 @@ async function route(
       if (url.searchParams.has("tree")) {
         const levels = readTreeLevel(root, target.rel);
         const tags = await tagRows(root, treeRowPaths(levels));
-        return htmlResponse(renderTreeFragment(target.path, target.rel, tags, levels));
+        return htmlResponse(renderTreeFragment(target.rel, tags, levels));
       }
 
       const index = join(target.path, "index.html");
@@ -403,14 +413,12 @@ async function route(
       const view = requested === "list" || requested === "grid" ? requested : undefined;
       const showAll = showAllEnabled(url);
       const entries = listEntries(target.path);
-      // Reuse the listing's read for the current sidebar level, then tag the
-      // sidebar rows and exactly the listing rows this page shows.
-      const levels = readTreeLevels(root, target.rel, true, entries);
-      const rows = treeRowPaths(levels);
-      for (const entry of shownEntries(entries, showAll)) {
-        rows.push({ path: rowPath(target.rel, entry.name, entry.dir) });
-      }
-      const tags = await tagRows(root, dedupeRows(rows));
+      // Reuse the listing's read for the current sidebar level, and tag the
+      // sidebar rows plus exactly the listing rows this page shows.
+      const extra = shownEntries(entries, showAll).map((entry) => ({
+        path: rowPath(target.rel, entry.name, entry.dir),
+      }));
+      const { levels, tags } = await pageTree(root, target.rel, true, entries, extra);
       return htmlResponse(
         renderListing({
           rootLabel,
@@ -523,8 +531,9 @@ async function route(
     let levels: TreeLevels = new Map();
     let errorTags: Map<string, Tag> | undefined;
     try {
+      // Read first: if tagging fails the tree still renders, only the tags go.
       levels = readTreeLevels(root, target.rel, target.kind === "dir");
-      errorTags = await tagRows(root, treeRowPaths(levels));
+      errorTags = await tagLevels(root, levels);
     } catch {
       // The error page must render even if the tree cannot be tagged.
     }

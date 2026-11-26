@@ -79,10 +79,12 @@ export function isEditable(target: EventTarget | null): boolean {
 // One keymap for every page. Binding.key is the lowercased event.key.
 // ---------------------------------------------------------------------------
 
+/** A symbol like "/" may need Shift on some layouts; "any" matches either state. */
+type ShiftRule = boolean | "any";
+
 export type Binding = {
   key: string;
-  /** "any" matches either shift state; a symbol like "/" may require Shift on some layouts. */
-  shift?: boolean | "any";
+  shift?: ShiftRule;
   mod?: boolean; // meta or ctrl
   allowInEditable?: boolean;
   when?: () => boolean;

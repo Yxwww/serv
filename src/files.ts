@@ -2,8 +2,6 @@ import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { FILE_LIMIT } from "./visibility";
 
-export { FILE_LIMIT };
-
 /** A root scan is two ripgrep passes; a burst of pages should reuse one. */
 const CACHE_TTL_MS = 30_000;
 const MAX_CACHED_ROOTS = 50;
@@ -186,6 +184,11 @@ async function ignoredRowsSplit(repo: Repo, root: string, rows: readonly Row[]):
  * a repo, there is no ignored tagging; hidden (dot) paths still count.
  */
 export async function tagRows(root: string, rows: readonly Row[]): Promise<Map<string, Entry>> {
+  // One row per path: callers may union the sidebar and listing row sets.
+  const unique = new Map<string, Row>();
+  for (const row of rows) unique.set(row.path, row);
+  rows = [...unique.values()];
+
   const tags = new Map<string, Entry>();
   for (const row of rows) {
     if (isHiddenPath(row.path)) tags.set(row.path, { path: row.path, hidden: true });

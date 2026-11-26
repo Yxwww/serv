@@ -179,14 +179,9 @@ export function renderSidebar(
 
 /** Children of one directory, for the lazy `GET /dir/?tree` expansion. */
 export function renderTreeFragment(
-  dirAbs: string,
   dirRel: string,
-  tags?: Map<string, Tag>,
-  levels?: TreeLevels,
+  tags: Map<string, Tag> | undefined,
+  levels: TreeLevels,
 ): string {
-  if (levels) return renderLevel(dirRel, "", tags, levels);
-  const level = levelFor(dirAbs, dirRel);
-  const map: TreeLevels = new Map();
-  if (level) map.set(dirRel, level);
-  return renderLevel(dirRel, "", tags, map);
+  return renderLevel(dirRel, "", tags, levels);
 }

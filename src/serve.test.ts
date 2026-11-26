@@ -6,7 +6,7 @@ import { parseArgs } from "./cli";
 import { scanFiles, tagRows } from "./files";
 import { ENTRY_LIMIT, listEntries, renderListing, renderMarkdownHtml, renderMarkdownPage } from "./render";
 import { resolveInput, resolveRequest, respond, SOURCE_LIMIT } from "./serve";
-import { MAX_TREE_ENTRIES, readTreeLevels, renderSidebar, renderTreeFragment } from "./tree";
+import { MAX_TREE_ENTRIES, readTreeLevel, readTreeLevels, renderSidebar, renderTreeFragment } from "./tree";
 
 const tmp = mkdtempSync(join(tmpdir(), "serv-test-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -383,7 +383,7 @@ describe("sidebar depth", () => {
     mkdirSync(join(dir, "a", "b"), { recursive: true });
     for (let i = 0; i < MAX_TREE_ENTRIES + 2; i++) writeFileSync(join(dir, "a", "b", `f${i}.txt`), "x");
 
-    const frag = renderTreeFragment(join(dir, "a", "b"), "a/b");
+    const frag = renderTreeFragment("a/b", undefined, readTreeLevel(dir, "a/b"));
     expect(frag).toContain('style="--depth:2">… 2 more</a>');
   });
 });
@@ -847,6 +847,39 @@ describe("path resolution", () => {
       chmodSync(locked, 0o755);
     }
   });
+
+  test.skipIf(process.getuid?.() === 0 || !Bun.which("git"))(
+    "an error page keeps its sidebar when tagging fails",
+    async () => {
+      const dir = fixtureDir("error-tag-fail");
+      initRepo(dir);
+      mkdirSync(join(dir, "docs"));
+      writeFileSync(join(dir, "docs", "note.md"), "x");
+      const locked = join(dir, "locked.txt");
+      writeFileSync(locked, "x");
+      chmodSync(locked, 0o000);
+
+      const original = Bun.spawn;
+      const stub = (...args: unknown[]) => {
+        const command = args[0];
+        if (Array.isArray(command) && command.includes("check-ignore")) throw new Error("git unavailable");
+        return (original as (...a: unknown[]) => unknown)(...args);
+      };
+      (Bun as unknown as { spawn: typeof stub }).spawn = stub;
+      try {
+        const res = await respond(dir, "http://localhost/locked.txt", { "sec-fetch-dest": "document" });
+        expect(res.status).toBe(403);
+        const body = await res.text();
+        expect(body).toContain("Permission denied");
+        // tagRows failed, but the tree was already read.
+        expect(body).toContain('href="/docs/"');
+        expect(body).toContain('href="/locked.txt"');
+      } finally {
+        (Bun as unknown as { spawn: typeof original }).spawn = original;
+        chmodSync(locked, 0o644);
+      }
+    },
+  );
 
   test("special characters are escaped in the tree, listing, breadcrumbs, title and 404", async () => {
     const dir = fixtureDir("escape");

@@ -464,7 +464,8 @@ function viewToggle(active: View, showAll: boolean): string {
 /** The tag attributes shared by listings, grid cards and the sidebar tree. */
 export function tagAttrs(tag: Tag | undefined, name: string): string {
   let attrs = "";
-  if (tag?.hidden || isHiddenPath(name)) attrs += " data-hidden";
+  // `name` is a basename, so this is isHiddenPath without the per-row split.
+  if (tag?.hidden || name.startsWith(".")) attrs += " data-hidden";
   if (tag?.ignored) attrs += " data-ignored";
   return attrs;
 }

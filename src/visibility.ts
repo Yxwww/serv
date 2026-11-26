@@ -3,7 +3,7 @@
  * `node:*` or anything that does.
  */
 
-/** One list has to fit comfortably in a response and in the client's memory. */
+/** The browser bundle prints the cap too, and cannot import files.ts (node:fs). */
 export const FILE_LIMIT = 50_000;
 
 /** Both kinds are hidden by default; the pre-paint script restores the choice. */
