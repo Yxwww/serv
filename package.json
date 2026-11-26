@@ -18,7 +18,9 @@
   "scripts": {
     "test": "bun test",
     "start": "bun run src/cli.ts",
-    "build:css": "tailwindcss -i ./src/styles.input.css -o ./src/styles.css --minify"
+    "build:css": "tailwindcss -i ./src/styles.input.css -o ./src/styles.css --minify",
+    "build:search": "bun build src/search.ts --minify --target=browser --format=esm --outfile=src/search.bundle.js",
+    "build": "bun run build:css && bun run build:search"
   },
   "keywords": [
     "bun",
@@ -33,6 +35,7 @@
     "@tailwindcss/cli": "4.3.5",
     "@tailwindcss/typography": "0.5.20",
     "@types/bun": "1.4.5",
+    "fzf": "0.5.2",
     "tailwindcss": "4.3.5",
     "typescript": "7.0.2"
   }

@@ -1,9 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Fzf } from "fzf";
 import { parseArgs } from "./cli";
+import { combineFiles, entriesUnder, readFiles, scanFiles, tagRows, walkFiles } from "./files";
 import { ENTRY_LIMIT, listEntries, renderListing, renderMarkdownHtml, renderMarkdownPage } from "./render";
+import { dispatchKey, highlightSegments, originalPositions, resultHref, type Binding } from "./search";
 import { resolveInput, resolveRequest, respond, SOURCE_LIMIT } from "./serve";
 import { MAX_TREE_ENTRIES, renderSidebar, renderTreeFragment } from "./tree";
 
@@ -15,6 +18,21 @@ function fixtureDir(name: string): string {
   const dir = join(tmp, `${n++}-${name}`);
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+function initRepo(dir: string): void {
+  const run = Bun.spawnSync(["git", "init", "-q"], { cwd: dir, stdout: "ignore", stderr: "ignore" });
+  expect(run.exitCode).toBe(0);
+}
+
+function commitAll(dir: string): void {
+  for (const args of [
+    ["git", "-C", dir, "add", "-A"],
+    ["git", "-C", dir, "-c", "user.name=serv", "-c", "user.email=serv@example.com", "commit", "-qm", "init"],
+  ]) {
+    const run = Bun.spawnSync(args, { stdout: "ignore", stderr: "pipe" });
+    expect(run.exitCode, run.stderr.toString()).toBe(0);
+  }
 }
 
 describe("markdown", () => {
@@ -68,7 +86,7 @@ describe("markdown", () => {
 });
 
 describe("directory listing", () => {
-  test("directories first, then files by name, dotfiles hidden, names escaped", () => {
+  test("directories first, then files by name, dotfiles tagged, names escaped", () => {
     const dir = fixtureDir("listing");
     mkdirSync(join(dir, "zdir"));
     mkdirSync(join(dir, "adir"));
@@ -84,7 +102,8 @@ describe("directory listing", () => {
     expect(at('href="adir/"')).toBeLessThan(at('href="zdir/"'));
     expect(at('href="zdir/"')).toBeLessThan(at('href="a.txt"'));
     expect(at('href="a.txt"')).toBeLessThan(at('href="b.txt"'));
-    expect(html).not.toContain(".DS_Store");
+    expect(html).toContain('<tr data-hidden><td class="name">');
+    expect(html).toContain(".DS_Store");
     expect(html).toContain("&lt;unsafe&gt;.txt");
   });
 
@@ -887,6 +906,608 @@ describe("cli arguments", () => {
   });
 });
 
+describe("command palette", () => {
+  const FILES_PATHS = [
+    ".gitignore",
+    ".hidden.md",
+    "README.md",
+    "node_modules/",
+    "node_modules/pkg/",
+    "node_modules/pkg/x.js",
+    "secret.txt",
+    "sub/",
+    "sub/a.md",
+    "sub/deep/",
+    "sub/deep/b.txt",
+    "sub/node_modules/",
+    "sub/node_modules/deep/",
+    "sub/node_modules/deep/y.js",
+  ];
+
+  function filesFixture(name: string): string {
+    const dir = fixtureDir(name);
+    mkdirSync(join(dir, "sub", "deep"), { recursive: true });
+    mkdirSync(join(dir, "sub", "node_modules", "deep"), { recursive: true });
+    mkdirSync(join(dir, "node_modules", "pkg"), { recursive: true });
+    mkdirSync(join(dir, ".git"));
+    writeFileSync(join(dir, ".gitignore"), "node_modules/\nsecret.txt\n");
+    writeFileSync(join(dir, "README.md"), "x");
+    writeFileSync(join(dir, "secret.txt"), "x");
+    writeFileSync(join(dir, "sub", "a.md"), "x");
+    writeFileSync(join(dir, "sub", "deep", "b.txt"), "x");
+    writeFileSync(join(dir, "sub", "node_modules", "deep", "y.js"), "x");
+    writeFileSync(join(dir, "node_modules", "pkg", "x.js"), "x");
+    writeFileSync(join(dir, ".hidden.md"), "x");
+    writeFileSync(join(dir, ".git", "config"), "x");
+    return dir;
+  }
+
+  async function withoutRg<T>(run: () => Promise<T>): Promise<T> {
+    const saved = process.env.PATH;
+    process.env.PATH = "/nonexistent";
+    try {
+      return await run();
+    } finally {
+      process.env.PATH = saved;
+    }
+  }
+
+  test.skipIf(!Bun.which("rg"))(
+    "?files lists tagged paths relative to the folder, folders with a trailing slash",
+    async () => {
+      const dir = filesFixture("files");
+
+      const res = await respond(dir, "http://localhost/?files");
+      expect(res.headers.get("content-type")).toBe("application/json; charset=utf-8");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      const body = (await res.json()) as {
+        entries: Array<{ path: string; hidden?: boolean; ignored?: boolean }>;
+      };
+      const byPath = new Map(body.entries.map((entry) => [entry.path, entry]));
+
+      // Path order on every backend, ignored entries included.
+      expect(body.entries.map((entry) => entry.path)).toEqual(FILES_PATHS);
+      expect(byPath.get(".gitignore")).toEqual({ path: ".gitignore", hidden: true });
+      expect(byPath.get(".hidden.md")).toEqual({ path: ".hidden.md", hidden: true });
+      expect(byPath.get("node_modules/")).toEqual({ path: "node_modules/", ignored: true });
+      expect(byPath.get("node_modules/pkg/x.js")).toEqual({ path: "node_modules/pkg/x.js", ignored: true });
+      expect(byPath.get("secret.txt")).toEqual({ path: "secret.txt", ignored: true });
+      expect(byPath.get("sub/node_modules/")).toEqual({ path: "sub/node_modules/", ignored: true });
+      expect(byPath.has(".git/")).toBe(false);
+      expect(byPath.has(".git/config")).toBe(false);
+
+      // Relative to the requested folder, not to the root.
+      const nested = (await (await respond(dir, "http://localhost/sub/?files")).json()) as {
+        entries: Array<{ path: string; ignored?: boolean }>;
+      };
+      expect(nested.entries.map((entry) => entry.path)).toEqual([
+        "a.md",
+        "deep/",
+        "deep/b.txt",
+        "node_modules/",
+        "node_modules/deep/",
+        "node_modules/deep/y.js",
+      ]);
+      expect(nested.entries.find((entry) => entry.path === "node_modules/")?.ignored).toBe(true);
+    },
+  );
+
+  test("?files without ripgrep keeps the path order and tags only dotfiles", async () => {
+    const dir = filesFixture("files-no-rg");
+    const body = await withoutRg(async () => {
+      const res = await respond(dir, "http://localhost/?files");
+      return (await res.json()) as {
+        entries: Array<{ path: string; hidden?: boolean; ignored?: boolean }>;
+      };
+    });
+
+    expect(body.entries.map((entry) => entry.path)).toEqual(FILES_PATHS);
+    expect(body.entries.filter((entry) => entry.ignored)).toEqual([]);
+    expect(body.entries.filter((entry) => entry.hidden).map((entry) => entry.path)).toEqual([
+      ".gitignore",
+      ".hidden.md",
+    ]);
+  });
+
+  test("combineFiles lists in path order and fills the cap with real paths first", () => {
+    const listed = combineFiles(
+      ["a.txt", "src/y.js"],
+      ["a.txt", "dist/x.js", "src/y.js"],
+      false,
+      false,
+      10,
+    );
+    expect(listed.entries).toEqual([
+      { path: "a.txt" },
+      { path: "dist/", ignored: true },
+      { path: "dist/x.js", ignored: true },
+      { path: "src/" },
+      { path: "src/y.js" },
+    ]);
+    expect(listed.truncated).toBe(false);
+
+    // The cap is decided by tags, then the survivors are shown in path order.
+    const capped = combineFiles(["z.txt"], ["z.txt", "a/ignored.txt"], false, false, 2);
+    expect(capped.entries).toEqual([
+      { path: "a/", ignored: true },
+      { path: "z.txt" },
+    ]);
+    expect(capped.truncated).toBe(true);
+
+    const realOnly = combineFiles(["z.txt"], ["z.txt", "a/ignored.txt"], false, false, 1);
+    expect(realOnly.entries).toEqual([{ path: "z.txt" }]);
+  });
+
+  test("concurrent cold requests share one collection", async () => {
+    const dir = fixtureDir("files-inflight");
+    writeFileSync(join(dir, "a.txt"), "x");
+
+    const first = scanFiles(dir);
+    const second = scanFiles(dir);
+    expect(second).toBe(first);
+    expect(await first).toEqual({ entries: [{ path: "a.txt" }], truncated: false });
+  });
+
+  test("the reader stops at the cap and tells the producer to stop", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("a\0b\0c"));
+        controller.enqueue(encoder.encode("\0d\0e\0"));
+        controller.close();
+      },
+    });
+    let stopped = 0;
+    expect(await readFiles(stream, 3, () => stopped++)).toEqual({
+      files: ["a", "b", "c"],
+      truncated: true,
+    });
+    expect(stopped).toBe(1);
+  });
+
+  test.skipIf(!Bun.which("rg"))(
+    "?files keeps a parent-ignored folder, but tags the tree's own ignored files",
+    async () => {
+      const base = fixtureDir("files-parent-ignore");
+      mkdirSync(join(base, ".git")); // ripgrep honours .gitignore inside a repo
+      writeFileSync(join(base, ".gitignore"), "child/**\n");
+      const child = join(base, "child");
+      mkdirSync(child);
+      writeFileSync(join(child, ".gitignore"), "secret.txt\n");
+      writeFileSync(join(child, "inside.txt"), "x");
+      writeFileSync(join(child, "secret.txt"), "x");
+
+      const res = await respond(child, "http://localhost/?files");
+      expect(await res.json()).toEqual({
+        entries: [
+          { path: ".gitignore", hidden: true },
+          { path: "inside.txt" },
+          { path: "secret.txt", ignored: true },
+        ],
+        truncated: false,
+      });
+    },
+  );
+
+  test("the no-ripgrep walk includes dotfiles and skips .git and symlinks", () => {
+    const dir = fixtureDir("files-walk");
+    mkdirSync(join(dir, "sub"));
+    mkdirSync(join(dir, ".git"));
+    mkdirSync(join(dir, "node_modules"));
+    writeFileSync(join(dir, "a.txt"), "x");
+    writeFileSync(join(dir, ".hidden"), "x");
+    writeFileSync(join(dir, "sub", "b.md"), "x");
+    writeFileSync(join(dir, ".git", "config"), "x");
+    writeFileSync(join(dir, "node_modules", "x.js"), "x");
+    const target = join(tmp, "walk-target.txt");
+    writeFileSync(target, "x");
+    symlinkSync(target, join(dir, "link.txt"));
+    symlinkSync(dir, join(dir, "loop"));
+
+    expect(walkFiles(dir, 100)).toEqual({
+      files: [".hidden", "a.txt", "node_modules/x.js", "sub/b.md"],
+      truncated: false,
+    });
+    const capped = walkFiles(dir, 2);
+    expect(capped.files).toHaveLength(2);
+    expect(capped.truncated).toBe(true);
+  });
+
+  test("?files refuses traversal and cannot list outside the root", async () => {
+    const base = fixtureDir("files-trav");
+    const root = join(base, "root");
+    mkdirSync(root);
+    writeFileSync(join(base, "secret.txt"), "TOP-SECRET");
+    writeFileSync(join(root, "inside.txt"), "inside");
+
+    // %2f keeps the escape in one segment, so it reaches resolveRequest undecoded.
+    const denied = await respond(root, "http://localhost/%2e%2e%2fsecret/?files");
+    expect(denied.status).toBe(403);
+    expect(await denied.text()).not.toContain("TOP-SECRET");
+
+    const ok = await respond(root, "http://localhost/?files");
+    expect(await ok.json()).toEqual({ entries: [{ path: "inside.txt" }], truncated: false });
+  });
+
+  test("names are delivered as JSON data, and the palette builds rows as text", async () => {
+    const dir = fixtureDir("files-data");
+    const name = `<img src=x onerror=alert(1)>.md`;
+    writeFileSync(join(dir, name), "x");
+
+    const res = await respond(dir, "http://localhost/?files");
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ entries: [{ path: name }], truncated: false });
+
+    // Highlighting returns text runs, so a row can only reach the DOM as a text node.
+    const segments = highlightSegments(name, new Set([0, 1]));
+    expect(segments).toEqual([
+      { text: "<i", hit: true },
+      { text: "mg src=x onerror=alert(1)>.md", hit: false },
+    ]);
+    expect(segments.map((s) => s.text).join("")).toBe(name);
+
+    const source = readFileSync(join(import.meta.dir, "search.ts"), "utf8");
+    expect(source).toContain("mark.textContent = segment.text");
+    expect(source).toContain("label.append(segment.text)");
+    expect(source).not.toMatch(/innerHTML\s*=\s*(?:path|name|item|result|segment)\b/);
+  });
+
+  test("highlights track UTF-16 offsets for astral names", () => {
+    const emoji = "a😀b.md";
+    const [b] = new Fzf([emoji]).find("b");
+    expect(originalPositions(emoji, b!.positions)).toEqual(new Set([3]));
+    expect(highlightSegments(emoji, originalPositions(emoji, b!.positions))).toEqual([
+      { text: "a😀", hit: false },
+      { text: "b", hit: true },
+      { text: ".md", hit: false },
+    ]);
+
+    const [face] = new Fzf([emoji]).find("😀");
+    expect(highlightSegments(emoji, originalPositions(emoji, face!.positions))).toEqual([
+      { text: "a", hit: false },
+      { text: "😀", hit: true },
+      { text: "b.md", hit: false },
+    ]);
+
+    const flag = "flag🇫🇷.md";
+    const [fr] = new Fzf([flag]).find("🇫🇷");
+    expect(highlightSegments(flag, originalPositions(flag, fr!.positions))).toEqual([
+      { text: "flag", hit: false },
+      { text: "🇫🇷", hit: true },
+      { text: ".md", hit: false },
+    ]);
+  });
+
+  test("highlights map fzf's normalized positions back to a decomposed name", () => {
+    const name = "café.md";
+
+    const [accent] = new Fzf([name]).find("é");
+    expect(originalPositions(name, accent!.positions)).toEqual(new Set([3, 4]));
+    expect(highlightSegments(name, originalPositions(name, accent!.positions))).toEqual([
+      { text: "caf", hit: false },
+      { text: "é", hit: true },
+      { text: ".md", hit: false },
+    ]);
+
+    const [prefix] = new Fzf([name]).find("cafe");
+    expect(originalPositions(name, prefix!.positions)).toEqual(new Set([0, 1, 2, 3, 4]));
+  });
+
+  test("resultHref encodes each path segment and keeps a folder's slash", () => {
+    expect(resultHref("a b/<x>.md")).toBe("/a%20b/%3Cx%3E.md");
+    expect(resultHref("sub/")).toBe("/sub/");
+    expect(resultHref("sub/a#b.md")).toBe("/sub/a%23b.md");
+  });
+
+  test.skipIf(!Bun.which("git"))("the indicator counts each hidden entry once", async () => {
+    const dir = fixtureDir("files-indicator");
+    initRepo(dir);
+    writeFileSync(join(dir, ".gitignore"), "dist/\n.cache\n");
+    writeFileSync(join(dir, ".cache"), "x"); // both a dotfile and ignored
+    writeFileSync(join(dir, ".env"), "x");
+    writeFileSync(join(dir, ". <img>.txt"), "x");
+    writeFileSync(join(dir, "keep.txt"), "x");
+    mkdirSync(join(dir, "dist"));
+    writeFileSync(join(dir, "dist", "bundle.js"), "x");
+
+    const html = await (await respond(dir, "http://localhost/")).text();
+    // .cache, .env, .gitignore, ". <img>.txt" and dist/ => five rows.
+    expect(html).toContain('data-serv-hidden-count aria-label="Show 5 hidden entries" title="Shift+H dotfiles · Shift+I ignored">5 hidden</button>');
+    expect(html).toContain('<tr data-hidden data-ignored>');
+    expect(html).toContain("<tr data-hidden>");
+    expect(html).toContain("<tr data-ignored>");
+    // Names stay escaped even on a tagged row.
+    expect(html).toContain("&lt;img&gt;");
+    expect(html).not.toContain("<img>.txt");
+  });
+
+  test("pages carry the hidden palette dialog and the pre-paint state", async () => {
+    const dir = fixtureDir("palette");
+    writeFileSync(join(dir, "a.md"), "x");
+
+    const html = await (await respond(dir, "http://localhost/")).text();
+    expect(html).toContain('<html lang="en">');
+    expect(html).not.toContain('<html lang="en" class=');
+    expect(html).toContain('id="serv-palette" hidden');
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('aria-controls="serv-search-list"');
+    expect(html).toContain('<script type="module">');
+    expect(html).toContain('e.classList.add("serv-js")');
+    expect(html).toContain("hidden>0 hidden</button>");
+    expect(html.indexOf('localStorage.getItem("serv-show-hidden")')).toBeLessThan(html.indexOf("<body"));
+  });
+});
+
+describe("per-folder tags", () => {
+  test("entriesUnder does not inherit the root cap", () => {
+    expect(entriesUnder({ entries: [{ path: "sub/a.txt" }], truncated: true }, "sub")).toEqual({
+      entries: [{ path: "a.txt" }],
+      truncated: false,
+    });
+  });
+
+  test.skipIf(!Bun.which("git"))(
+    "tags a folder from its own rules even when the scan cap is forced",
+    async () => {
+      const dir = fixtureDir("tag-rows");
+      initRepo(dir);
+      writeFileSync(join(dir, ".gitignore"), "out/\n*.log\n!important.log\n");
+      mkdirSync(join(dir, "out"));
+      writeFileSync(join(dir, "out", "x.txt"), "x");
+      writeFileSync(join(dir, "keep.log"), "x");
+      writeFileSync(join(dir, "important.log"), "x");
+      mkdirSync(join(dir, "sub", "nested"), { recursive: true });
+      writeFileSync(join(dir, "sub", ".gitignore"), "nested/\n");
+      writeFileSync(join(dir, "sub", "nested", "y.txt"), "x");
+      writeFileSync(join(dir, "visible.txt"), "x");
+      // A path behind a symlink makes a whole check-ignore batch fail.
+      symlinkSync(join(dir, "sub"), join(dir, "linkdir"));
+      for (let i = 0; i < 8; i++) writeFileSync(join(dir, `z${i}.txt`), "x");
+
+      const rows = [
+        { path: "out/" },
+        { path: "keep.log" },
+        { path: "important.log" },
+        { path: "sub/" },
+        { path: "sub/nested/" },
+        { path: "visible.txt" },
+      ];
+      const tags = await tagRows(dir, rows);
+      expect(tags.get("out/")).toEqual({ path: "out/", ignored: true });
+      expect(tags.get("keep.log")).toEqual({ path: "keep.log", ignored: true });
+      expect(tags.has("important.log")).toBe(false); // negated
+      expect(tags.get("sub/nested/")).toEqual({ path: "sub/nested/", ignored: true });
+      expect(tags.has("sub/")).toBe(false);
+      expect(tags.has("visible.txt")).toBe(false);
+
+      // Force the old scan cap: the page must not depend on it for tags.
+      const scan = await scanFiles(dir, 2);
+      expect(scan.truncated).toBe(true);
+
+      const html = await (await respond(dir, "http://localhost/")).text();
+      const table = html.slice(html.indexOf('<table class="listing">'), html.indexOf("</table>"));
+      const rowFor = (href: string) =>
+        table.split("</tr>").find((row) => row.includes(`href="${href}"`)) ?? "";
+      expect(rowFor("out/")).toContain("data-ignored");
+      expect(rowFor("keep.log")).toContain("data-ignored");
+      expect(rowFor("important.log")).not.toContain("data-ignored");
+      expect(html).toContain("3 hidden"); // .gitignore, out/, keep.log
+    },
+  );
+
+  test.skipIf(!Bun.which("git"))(
+    "ignores parent rules but keeps the served tree's own rules",
+    async () => {
+      const parent = fixtureDir("tag-parent");
+      initRepo(parent);
+      writeFileSync(join(parent, ".gitignore"), "child/**\n");
+      const child = join(parent, "child");
+      mkdirSync(child);
+      writeFileSync(join(child, ".gitignore"), "inside.txt\n");
+      writeFileSync(join(child, "inside.txt"), "x");
+      writeFileSync(join(child, "other.txt"), "x");
+
+      const tags = await tagRows(child, [{ path: "inside.txt" }, { path: "other.txt" }]);
+      expect(tags.get("inside.txt")).toEqual({ path: "inside.txt", ignored: true });
+      expect(tags.has("other.txt")).toBe(false);
+    },
+  );
+
+  test.skipIf(!Bun.which("git"))(
+    "a submodule row does not clear the other tags on the page",
+    async () => {
+      const source = fixtureDir("tag-submodule-source");
+      initRepo(source);
+      writeFileSync(join(source, "inside.txt"), "x");
+      commitAll(source);
+
+      const parent = fixtureDir("tag-submodule-parent");
+      initRepo(parent);
+      writeFileSync(join(parent, ".gitignore"), "out/\n");
+      writeFileSync(join(parent, "visible.txt"), "x");
+      mkdirSync(join(parent, "out"));
+      writeFileSync(join(parent, "out", "bundle.js"), "x");
+      commitAll(parent);
+
+      const add = Bun.spawnSync(
+        ["git", "-C", parent, "-c", "protocol.file.allow=always", "submodule", "add", source, "vendor/sub"],
+        { stdout: "ignore", stderr: "pipe" },
+      );
+      expect(add.exitCode, add.stderr.toString()).toBe(0);
+      // A submodule worktree root has a .git file; check-ignore rejects it.
+      expect(lstatSync(join(parent, "vendor", "sub", ".git")).isFile()).toBe(true);
+
+      const tags = await tagRows(parent, [
+        { path: "out/" },
+        { path: "vendor/" },
+        { path: "vendor/sub/" },
+        { path: "vendor/sub/inside.txt" },
+        { path: "visible.txt" },
+      ]);
+      expect(tags.get("out/")).toEqual({ path: "out/", ignored: true });
+      expect(tags.has("vendor/")).toBe(false);
+      expect(tags.has("vendor/sub/")).toBe(false);
+      expect(tags.has("vendor/sub/inside.txt")).toBe(false);
+      expect(tags.has("visible.txt")).toBe(false);
+    },
+  );
+
+  test("leaves ignored tags off outside a git repo", async () => {
+    const dir = fixtureDir("tag-norepo");
+    writeFileSync(join(dir, ".gitignore"), "secret.txt\n");
+    writeFileSync(join(dir, "secret.txt"), "x");
+
+    const tags = await tagRows(dir, [{ path: "secret.txt" }]);
+    expect(tags.has("secret.txt")).toBe(false);
+  });
+
+  test("a listing inside a dot-directory reports its hidden rows", async () => {
+    const dir = fixtureDir("dotdir");
+    mkdirSync(join(dir, ".secret"));
+    writeFileSync(join(dir, ".secret", "a.txt"), "x");
+
+    const html = await (await respond(dir, "http://localhost/.secret/")).text();
+    expect(html).toContain("<tr data-hidden>");
+    expect(html).toContain("1 hidden");
+  });
+
+  test("image navigation includes dotfile images", async () => {
+    const dir = fixtureDir("image-dots");
+    writeFileSync(join(dir, ".cover.png"), "x");
+    writeFileSync(join(dir, "b.png"), "x");
+
+    const first = await (
+      await respond(dir, "http://localhost/.cover.png", { "sec-fetch-dest": "document" })
+    ).text();
+    expect(first).toContain("1 / 2");
+    expect(first).toContain('aria-label="Next image: b.png"');
+
+    const second = await (
+      await respond(dir, "http://localhost/b.png", { "sec-fetch-dest": "document" })
+    ).text();
+    expect(second).toContain("2 / 2");
+    expect(second).toContain('aria-label="Previous image: .cover.png"');
+  });
+});
+
+describe("keymap", () => {
+  type Fake = {
+    key: string;
+    shiftKey?: boolean;
+    metaKey?: boolean;
+    ctrlKey?: boolean;
+    altKey?: boolean;
+    isComposing?: boolean;
+    keyCode?: number;
+    target?: unknown;
+  };
+
+  function press(opts: Fake) {
+    let prevented = 0;
+    const event = {
+      key: opts.key,
+      shiftKey: opts.shiftKey ?? false,
+      metaKey: opts.metaKey ?? false,
+      ctrlKey: opts.ctrlKey ?? false,
+      altKey: opts.altKey ?? false,
+      isComposing: opts.isComposing ?? false,
+      keyCode: opts.keyCode ?? 0,
+      target: opts.target ?? { tagName: "BODY" },
+      preventDefault: () => {
+        prevented++;
+      },
+    } as unknown as KeyboardEvent;
+    return { event, prevented: () => prevented };
+  }
+
+  test("applies modifiers, editable fields, guards and preventDefault once", () => {
+    const ran: string[] = [];
+    const bindings: Binding[] = [
+      { key: "/", run: () => ran.push("slash") },
+      { key: "k", mod: true, allowInEditable: true, run: () => ran.push("mod-k") },
+      { key: "h", shift: true, run: () => ran.push("shift-h") },
+      { key: "arrowdown", when: () => false, run: () => ran.push("never") },
+    ];
+    const editable = { tagName: "INPUT" };
+
+    let hit = press({ key: "/", target: editable });
+    expect(dispatchKey(hit.event, bindings)).toBe(false);
+    expect(hit.prevented()).toBe(0);
+
+    hit = press({ key: "/" });
+    expect(dispatchKey(hit.event, bindings)).toBe(true);
+    expect(ran).toEqual(["slash"]);
+    expect(hit.prevented()).toBe(1);
+
+    // A modifier binding is allowed in a field; an unmodified key is not.
+    hit = press({ key: "k", ctrlKey: true, target: editable });
+    expect(dispatchKey(hit.event, bindings)).toBe(true);
+    expect(ran).toEqual(["slash", "mod-k"]);
+    hit = press({ key: "k", target: editable });
+    expect(dispatchKey(hit.event, bindings)).toBe(false);
+
+    // An unexpected modifier and the wrong shift state do not match.
+    hit = press({ key: "/", ctrlKey: true });
+    expect(dispatchKey(hit.event, bindings)).toBe(false);
+    hit = press({ key: "h" });
+    expect(dispatchKey(hit.event, bindings)).toBe(false);
+    hit = press({ key: "H", shiftKey: true });
+    expect(dispatchKey(hit.event, bindings)).toBe(true);
+    expect(ran).toEqual(["slash", "mod-k", "shift-h"]);
+
+    // Alt is never claimed, and a false guard skips.
+    hit = press({ key: "/", altKey: true });
+    expect(dispatchKey(hit.event, bindings)).toBe(false);
+    hit = press({ key: "arrowdown" });
+    expect(dispatchKey(hit.event, bindings)).toBe(false);
+  });
+
+  test("leaves IME composition keys to the input method", () => {
+    const ran: string[] = [];
+    const bindings: Binding[] = [
+      { key: "enter", allowInEditable: true, run: () => ran.push("enter") },
+      { key: "escape", allowInEditable: true, run: () => ran.push("escape") },
+    ];
+    const editable = { tagName: "INPUT" };
+
+    let hit = press({ key: "Enter", isComposing: true, target: editable });
+    expect(dispatchKey(hit.event, bindings)).toBe(false);
+    expect(hit.prevented()).toBe(0);
+    expect(ran).toEqual([]);
+
+    hit = press({ key: "Escape", keyCode: 229, target: editable });
+    expect(dispatchKey(hit.event, bindings)).toBe(false);
+    expect(ran).toEqual([]);
+
+    hit = press({ key: "Enter", target: editable });
+    expect(dispatchKey(hit.event, bindings)).toBe(true);
+    expect(ran).toEqual(["enter"]);
+  });
+});
+
+describe("search bundle", () => {
+  test("src/search.bundle.js is the current build of src/search.ts", () => {
+    const root = join(import.meta.dir, "..");
+    const out = join(fixtureDir("search-build"), "search.bundle.js");
+    const run = Bun.spawnSync(
+      [
+        process.execPath,
+        "build",
+        join(root, "src/search.ts"),
+        "--minify",
+        "--target=browser",
+        "--format=esm",
+        "--outfile",
+        out,
+      ],
+      { cwd: root, stdout: "ignore", stderr: "pipe" },
+    );
+    expect(run.exitCode, run.stderr.toString()).toBe(0);
+    expect(readFileSync(out, "utf8")).toBe(readFileSync(join(root, "src/search.bundle.js"), "utf8"));
+  });
+});
+
 describe("stylesheet", () => {
   test("src/styles.css is the current build of src/styles.input.css", () => {
     const root = join(import.meta.dir, "..");
@@ -905,5 +1526,12 @@ describe("stylesheet", () => {
     );
     expect(run.exitCode, run.stderr.toString()).toBe(0);
     expect(readFileSync(out, "utf8")).toBe(readFileSync(join(root, "src/styles.css"), "utf8"));
+  });
+
+  test("no-JS CSS keeps dotfiles hidden and ignored entries visible", () => {
+    const css = readFileSync(join(import.meta.dir, "styles.css"), "utf8");
+    expect(css).toContain("html:not(.serv-show-hidden) [data-hidden]");
+    expect(css).toContain("html.serv-js:not(.serv-show-ignored) [data-ignored]");
+    expect(css).toContain("html:not(.serv-js) .hidden-count");
   });
 });

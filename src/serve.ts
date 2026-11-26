@@ -12,6 +12,7 @@ import {
   isTextName,
 } from "./types";
 import {
+  ENTRY_LIMIT,
   listEntries,
   renderBinaryViewer,
   renderError,
@@ -25,7 +26,14 @@ import {
   renderSourcePage,
   type ImageLink,
 } from "./render";
-import { renderSidebar, renderTreeFragment } from "./tree";
+import {
+  MAX_TREE_ENTRIES,
+  expandedDirs,
+  listTree,
+  renderSidebar,
+  renderTreeFragment,
+} from "./tree";
+import { entriesUnder, scanFiles, tagRows, type Entry as Tag, type Row } from "./files";
 
 type Input = { kind: "dir" | "file"; root: string; startPath: string };
 
@@ -246,6 +254,18 @@ function textResponse(body: string, status: number): Response {
   });
 }
 
+function jsonResponse(body: unknown): Response {
+  const text = JSON.stringify(body);
+  return new Response(text, {
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "content-length": String(Buffer.byteLength(text)),
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
 function isFile(path: string): boolean {
   try {
     return statSync(path).isFile();
@@ -269,7 +289,7 @@ type ImageNav = {
 function imageNeighbors(path: string, rel: string): ImageNav {
   const dir = dirname(path);
   const names = readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => !entry.name.startsWith(".") && IMAGE_EXTS.has(extname(entry.name).toLowerCase()))
+    .filter((entry) => IMAGE_EXTS.has(extname(entry.name).toLowerCase()))
     .filter((entry) => {
       if (!entry.isSymbolicLink()) return !entry.isDirectory();
       // A symlink's Dirent says link, not what it points at. Only image-named
@@ -319,6 +339,46 @@ async function route(
     fileResponse(path, type, extra, range);
 
   if (target.kind === "outside") return textResponse("Forbidden\n", 403);
+
+  type ListingEntry = ReturnType<typeof listEntries>[number];
+  const rowPath = (rel: string, name: string, dir: boolean): string =>
+    `${rel ? rel + "/" : ""}${name}${dir ? "/" : ""}`;
+  const rowsForTree = (levels: string[]): Row[] => {
+    const rows: Row[] = [];
+    for (const rel of levels) {
+      let entries;
+      try {
+        entries = listTree(rel ? join(root, rel) : root);
+      } catch {
+        continue;
+      }
+      for (const entry of entries.slice(0, MAX_TREE_ENTRIES)) {
+        rows.push({ path: rowPath(rel, entry.name, entry.dir) });
+      }
+    }
+    return rows;
+  };
+  const rowsForListing = (rel: string, entries: ListingEntry[], showAll: boolean): Row[] => {
+    const shown = showAll ? entries : entries.slice(0, ENTRY_LIMIT);
+    return shown.map((entry) => ({ path: rowPath(rel, entry.name, entry.dir) }));
+  };
+  // One check-ignore per page over exactly the rows rendered here, so the
+  // capped whole-root scan behind `?files` cannot drop a listing/tree tag.
+  const tagsFor = async (
+    rel: string,
+    isDir: boolean,
+    listing?: ListingEntry[],
+    showAll = false,
+  ): Promise<Map<string, Tag>> => {
+    const rows = rowsForTree(expandedDirs(rel, isDir));
+    if (listing) rows.push(...rowsForListing(rel, listing, showAll));
+    const unique = new Map<string, Row>();
+    for (const row of rows) unique.set(row.path, row);
+    return tagRows(root, [...unique.values()]);
+  };
+  const sidebarFor = async (rel: string, isDir: boolean): Promise<string> =>
+    renderSidebar(root, rel, await tagsFor(rel, isDir));
+
   if (target.kind === "missing") {
     let path = url.pathname;
     try {
@@ -326,7 +386,7 @@ async function route(
     } catch {
       // Keep the encoded form rather than failing the 404 page.
     }
-    return htmlResponse(renderNotFound({ rootLabel, path, sidebar: renderSidebar(root, "") }), 404);
+    return htmlResponse(renderNotFound({ rootLabel, path, sidebar: await sidebarFor("", true) }), 404);
   }
 
   const dest = headerValue(headers, "sec-fetch-dest");
@@ -341,7 +401,13 @@ async function route(
           headers: { location: url.pathname + "/" + url.search, "content-length": "0" },
         });
       }
-      if (url.searchParams.has("tree")) return htmlResponse(renderTreeFragment(target.path, target.rel));
+      if (url.searchParams.has("files")) {
+        return jsonResponse(entriesUnder(await scanFiles(root), target.rel));
+      }
+      if (url.searchParams.has("tree")) {
+        const rows = rowsForTree([target.rel]);
+        return htmlResponse(renderTreeFragment(target.path, target.rel, await tagRows(root, rows)));
+      }
 
       const index = join(target.path, "index.html");
       if (isFile(index)) return serveFile(index);
@@ -351,16 +417,20 @@ async function route(
       const readmeText = readmeFile ? await readText(readme) : undefined;
       const requested = url.searchParams.get("view");
       const view = requested === "list" || requested === "grid" ? requested : undefined;
+      const showAll = showAllEnabled(url);
+      const entries = listEntries(target.path);
+      const map = await tagsFor(target.rel, true, entries, showAll);
       return htmlResponse(
         renderListing({
           rootLabel,
           rel: target.rel,
-          entries: listEntries(target.path),
+          entries,
           readmeHtml: readmeText ? renderMarkdownHtml(readmeText.text) : undefined,
           readmeTruncated: readmeText?.truncated ? SOURCE_LIMIT : undefined,
-          sidebar: renderSidebar(root, target.rel),
+          sidebar: renderSidebar(root, target.rel, map),
+          tags: map,
           view,
-          showAll: showAllEnabled(url),
+          showAll,
         }),
       );
     }
@@ -378,7 +448,7 @@ async function route(
           markdown: text,
           rootLabel,
           rel: target.rel,
-          sidebar: renderSidebar(root, target.rel),
+          sidebar: await sidebarFor(target.rel, false),
           truncated: truncated ? SOURCE_LIMIT : undefined,
         }),
         200,
@@ -394,7 +464,7 @@ async function route(
           text,
           rootLabel,
           rel: target.rel,
-          sidebar: renderSidebar(root, target.rel),
+          sidebar: await sidebarFor(target.rel, false),
           truncated: truncated ? SOURCE_LIMIT : undefined,
         }),
         200,
@@ -408,7 +478,7 @@ async function route(
     // A viewer for a file nobody can read is worse than an error page.
     assertReadable(target.path);
 
-    const sidebar = renderSidebar(root, target.rel);
+    const sidebar = await sidebarFor(target.rel, false);
     const size = statSync(target.path).size;
     let page: string;
 
@@ -459,11 +529,17 @@ async function route(
     const status = failureStatus(error);
     if (status === 500) console.error(`serv: could not read ${target.path}`, error);
     const path = target.kind === "dir" && target.rel ? `/${target.rel}/` : `/${target.rel}`;
+    let errorTags: Map<string, Tag> | undefined;
+    try {
+      errorTags = await tagsFor(target.rel, target.kind === "dir");
+    } catch {
+      // The error page must render even if the tree cannot be tagged.
+    }
     return htmlResponse(
       renderError({
         rootLabel,
         path,
-        sidebar: renderSidebar(root, target.rel),
+        sidebar: renderSidebar(root, target.rel, errorTags),
         status,
         message: status === 403 ? "Permission denied" : "Could not read this path",
       }),
