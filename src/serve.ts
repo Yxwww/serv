@@ -12,7 +12,6 @@ import {
   isTextName,
 } from "./types";
 import {
-  ENTRY_LIMIT,
   listEntries,
   renderBinaryViewer,
   renderError,
@@ -24,16 +23,18 @@ import {
   renderMediaViewer,
   renderNotFound,
   renderSourcePage,
+  shownEntries,
   type ImageLink,
 } from "./render";
 import {
-  MAX_TREE_ENTRIES,
-  expandedDirs,
-  listTree,
+  readTreeLevel,
+  readTreeLevels,
   renderSidebar,
   renderTreeFragment,
+  treeRowPaths,
+  type TreeLevels,
 } from "./tree";
-import { entriesUnder, scanFiles, tagRows, type Entry as Tag, type Row } from "./files";
+import { entriesUnder, rowPath, scanFiles, tagRows, type Entry as Tag, type Row } from "./files";
 
 type Input = { kind: "dir" | "file"; root: string; startPath: string };
 
@@ -322,6 +323,27 @@ function showAllEnabled(url: URL): boolean {
   return query !== "" && query.split("&").includes("showall");
 }
 
+function dedupeRows(rows: readonly Row[]): Row[] {
+  const unique = new Map<string, Row>();
+  for (const row of rows) unique.set(row.path, row);
+  return [...unique.values()];
+}
+
+/** The sidebar plus tags for exactly the rows it renders, from one read per level. */
+async function taggedTree(
+  root: string,
+  rel: string,
+  isDir: boolean,
+): Promise<{ levels: TreeLevels; tags: Map<string, Tag> }> {
+  const levels = readTreeLevels(root, rel, isDir);
+  return { levels, tags: await tagRows(root, treeRowPaths(levels)) };
+}
+
+async function sidebarFor(root: string, rel: string, isDir: boolean): Promise<string> {
+  const { levels, tags } = await taggedTree(root, rel, isDir);
+  return renderSidebar(root, rel, tags, levels);
+}
+
 async function route(
   root: string,
   requestUrl: string,
@@ -340,45 +362,6 @@ async function route(
 
   if (target.kind === "outside") return textResponse("Forbidden\n", 403);
 
-  type ListingEntry = ReturnType<typeof listEntries>[number];
-  const rowPath = (rel: string, name: string, dir: boolean): string =>
-    `${rel ? rel + "/" : ""}${name}${dir ? "/" : ""}`;
-  const rowsForTree = (levels: string[]): Row[] => {
-    const rows: Row[] = [];
-    for (const rel of levels) {
-      let entries;
-      try {
-        entries = listTree(rel ? join(root, rel) : root);
-      } catch {
-        continue;
-      }
-      for (const entry of entries.slice(0, MAX_TREE_ENTRIES)) {
-        rows.push({ path: rowPath(rel, entry.name, entry.dir) });
-      }
-    }
-    return rows;
-  };
-  const rowsForListing = (rel: string, entries: ListingEntry[], showAll: boolean): Row[] => {
-    const shown = showAll ? entries : entries.slice(0, ENTRY_LIMIT);
-    return shown.map((entry) => ({ path: rowPath(rel, entry.name, entry.dir) }));
-  };
-  // One check-ignore per page over exactly the rows rendered here, so the
-  // capped whole-root scan behind `?files` cannot drop a listing/tree tag.
-  const tagsFor = async (
-    rel: string,
-    isDir: boolean,
-    listing?: ListingEntry[],
-    showAll = false,
-  ): Promise<Map<string, Tag>> => {
-    const rows = rowsForTree(expandedDirs(rel, isDir));
-    if (listing) rows.push(...rowsForListing(rel, listing, showAll));
-    const unique = new Map<string, Row>();
-    for (const row of rows) unique.set(row.path, row);
-    return tagRows(root, [...unique.values()]);
-  };
-  const sidebarFor = async (rel: string, isDir: boolean): Promise<string> =>
-    renderSidebar(root, rel, await tagsFor(rel, isDir));
-
   if (target.kind === "missing") {
     let path = url.pathname;
     try {
@@ -386,7 +369,7 @@ async function route(
     } catch {
       // Keep the encoded form rather than failing the 404 page.
     }
-    return htmlResponse(renderNotFound({ rootLabel, path, sidebar: await sidebarFor("", true) }), 404);
+    return htmlResponse(renderNotFound({ rootLabel, path, sidebar: await sidebarFor(root, "", true) }), 404);
   }
 
   const dest = headerValue(headers, "sec-fetch-dest");
@@ -405,8 +388,9 @@ async function route(
         return jsonResponse(entriesUnder(await scanFiles(root), target.rel));
       }
       if (url.searchParams.has("tree")) {
-        const rows = rowsForTree([target.rel]);
-        return htmlResponse(renderTreeFragment(target.path, target.rel, await tagRows(root, rows)));
+        const levels = readTreeLevel(root, target.rel);
+        const tags = await tagRows(root, treeRowPaths(levels));
+        return htmlResponse(renderTreeFragment(target.path, target.rel, tags, levels));
       }
 
       const index = join(target.path, "index.html");
@@ -419,7 +403,14 @@ async function route(
       const view = requested === "list" || requested === "grid" ? requested : undefined;
       const showAll = showAllEnabled(url);
       const entries = listEntries(target.path);
-      const map = await tagsFor(target.rel, true, entries, showAll);
+      // Reuse the listing's read for the current sidebar level, then tag the
+      // sidebar rows and exactly the listing rows this page shows.
+      const levels = readTreeLevels(root, target.rel, true, entries);
+      const rows = treeRowPaths(levels);
+      for (const entry of shownEntries(entries, showAll)) {
+        rows.push({ path: rowPath(target.rel, entry.name, entry.dir) });
+      }
+      const tags = await tagRows(root, dedupeRows(rows));
       return htmlResponse(
         renderListing({
           rootLabel,
@@ -427,8 +418,8 @@ async function route(
           entries,
           readmeHtml: readmeText ? renderMarkdownHtml(readmeText.text) : undefined,
           readmeTruncated: readmeText?.truncated ? SOURCE_LIMIT : undefined,
-          sidebar: renderSidebar(root, target.rel, map),
-          tags: map,
+          sidebar: renderSidebar(root, target.rel, tags, levels),
+          tags,
           view,
           showAll,
         }),
@@ -448,7 +439,7 @@ async function route(
           markdown: text,
           rootLabel,
           rel: target.rel,
-          sidebar: await sidebarFor(target.rel, false),
+          sidebar: await sidebarFor(root, target.rel, false),
           truncated: truncated ? SOURCE_LIMIT : undefined,
         }),
         200,
@@ -464,7 +455,7 @@ async function route(
           text,
           rootLabel,
           rel: target.rel,
-          sidebar: await sidebarFor(target.rel, false),
+          sidebar: await sidebarFor(root, target.rel, false),
           truncated: truncated ? SOURCE_LIMIT : undefined,
         }),
         200,
@@ -478,7 +469,7 @@ async function route(
     // A viewer for a file nobody can read is worse than an error page.
     assertReadable(target.path);
 
-    const sidebar = await sidebarFor(target.rel, false);
+    const sidebar = await sidebarFor(root, target.rel, false);
     const size = statSync(target.path).size;
     let page: string;
 
@@ -529,9 +520,11 @@ async function route(
     const status = failureStatus(error);
     if (status === 500) console.error(`serv: could not read ${target.path}`, error);
     const path = target.kind === "dir" && target.rel ? `/${target.rel}/` : `/${target.rel}`;
+    let levels: TreeLevels = new Map();
     let errorTags: Map<string, Tag> | undefined;
     try {
-      errorTags = await tagsFor(target.rel, target.kind === "dir");
+      levels = readTreeLevels(root, target.rel, target.kind === "dir");
+      errorTags = await tagRows(root, treeRowPaths(levels));
     } catch {
       // The error page must render even if the tree cannot be tagged.
     }
@@ -539,7 +532,7 @@ async function route(
       renderError({
         rootLabel,
         path,
-        sidebar: renderSidebar(root, target.rel, errorTags),
+        sidebar: renderSidebar(root, target.rel, errorTags, levels),
         status,
         message: status === 403 ? "Permission denied" : "Could not read this path",
       }),

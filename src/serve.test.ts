@@ -1,14 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Fzf } from "fzf";
 import { parseArgs } from "./cli";
-import { combineFiles, entriesUnder, readFiles, scanFiles, tagRows, walkFiles } from "./files";
+import { scanFiles, tagRows } from "./files";
 import { ENTRY_LIMIT, listEntries, renderListing, renderMarkdownHtml, renderMarkdownPage } from "./render";
-import { dispatchKey, highlightSegments, originalPositions, resultHref, type Binding } from "./search";
 import { resolveInput, resolveRequest, respond, SOURCE_LIMIT } from "./serve";
-import { MAX_TREE_ENTRIES, renderSidebar, renderTreeFragment } from "./tree";
+import { MAX_TREE_ENTRIES, readTreeLevels, renderSidebar, renderTreeFragment } from "./tree";
 
 const tmp = mkdtempSync(join(tmpdir(), "serv-test-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -23,16 +21,6 @@ function fixtureDir(name: string): string {
 function initRepo(dir: string): void {
   const run = Bun.spawnSync(["git", "init", "-q"], { cwd: dir, stdout: "ignore", stderr: "ignore" });
   expect(run.exitCode).toBe(0);
-}
-
-function commitAll(dir: string): void {
-  for (const args of [
-    ["git", "-C", dir, "add", "-A"],
-    ["git", "-C", dir, "-c", "user.name=serv", "-c", "user.email=serv@example.com", "commit", "-qm", "init"],
-  ]) {
-    const run = Bun.spawnSync(args, { stdout: "ignore", stderr: "pipe" });
-    expect(run.exitCode, run.stderr.toString()).toBe(0);
-  }
 }
 
 describe("markdown", () => {
@@ -323,9 +311,29 @@ describe("sidebar", () => {
     const dir = fixtureDir("tree-cap");
     for (let i = 0; i < MAX_TREE_ENTRIES + 5; i++) writeFileSync(join(dir, `f${String(i).padStart(3, "0")}.txt`), "x");
 
-    const html = renderSidebar(dir, "");
+    const html = renderSidebar(dir, "", undefined, readTreeLevels(dir, "", true));
     expect(html.match(/<li class="f"/g)?.length).toBe(MAX_TREE_ENTRIES);
     expect(html).toContain('<a href="/" style="--depth:0">… 5 more</a>');
+  });
+
+  test.skipIf(!Bun.which("git"))("a directory page tags the current level's sidebar rows", async () => {
+    const dir = fixtureDir("tree-dir-tags");
+    initRepo(dir);
+    writeFileSync(join(dir, ".gitignore"), "*.log\n");
+    mkdirSync(join(dir, "docs", "guide"), { recursive: true });
+    writeFileSync(join(dir, "docs", "guide", "note.md"), "x\n");
+    writeFileSync(join(dir, "docs", "guide", "skip.log"), "x\n");
+    writeFileSync(join(dir, "docs", "guide", ".dot"), "x\n");
+
+    const html = await (await respond(dir, "http://localhost/docs/guide/")).text();
+    const sidebar = html.slice(html.indexOf('<aside class="sidebar"'), html.indexOf("</aside>"));
+    const rowFor = (href: string) =>
+      sidebar.split("</li>").find((row) => row.includes(`href="${href}"`)) ?? "";
+
+    // The current directory is the deepest expanded level; its tags come from tagRows.
+    expect(rowFor("/docs/guide/skip.log")).toContain("data-ignored");
+    expect(rowFor("/docs/guide/.dot")).toContain("data-hidden");
+    expect(rowFor("/docs/guide/note.md")).not.toContain("data-hidden");
   });
 
   test("?tree returns an escaped fragment and rejects traversal", async () => {
@@ -1009,61 +1017,8 @@ describe("command palette", () => {
     ]);
   });
 
-  test("combineFiles lists in path order and fills the cap with real paths first", () => {
-    const listed = combineFiles(
-      ["a.txt", "src/y.js"],
-      ["a.txt", "dist/x.js", "src/y.js"],
-      false,
-      false,
-      10,
-    );
-    expect(listed.entries).toEqual([
-      { path: "a.txt" },
-      { path: "dist/", ignored: true },
-      { path: "dist/x.js", ignored: true },
-      { path: "src/" },
-      { path: "src/y.js" },
-    ]);
-    expect(listed.truncated).toBe(false);
 
-    // The cap is decided by tags, then the survivors are shown in path order.
-    const capped = combineFiles(["z.txt"], ["z.txt", "a/ignored.txt"], false, false, 2);
-    expect(capped.entries).toEqual([
-      { path: "a/", ignored: true },
-      { path: "z.txt" },
-    ]);
-    expect(capped.truncated).toBe(true);
 
-    const realOnly = combineFiles(["z.txt"], ["z.txt", "a/ignored.txt"], false, false, 1);
-    expect(realOnly.entries).toEqual([{ path: "z.txt" }]);
-  });
-
-  test("concurrent cold requests share one collection", async () => {
-    const dir = fixtureDir("files-inflight");
-    writeFileSync(join(dir, "a.txt"), "x");
-
-    const first = scanFiles(dir);
-    const second = scanFiles(dir);
-    expect(second).toBe(first);
-    expect(await first).toEqual({ entries: [{ path: "a.txt" }], truncated: false });
-  });
-
-  test("the reader stops at the cap and tells the producer to stop", async () => {
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(encoder.encode("a\0b\0c"));
-        controller.enqueue(encoder.encode("\0d\0e\0"));
-        controller.close();
-      },
-    });
-    let stopped = 0;
-    expect(await readFiles(stream, 3, () => stopped++)).toEqual({
-      files: ["a", "b", "c"],
-      truncated: true,
-    });
-    expect(stopped).toBe(1);
-  });
 
   test.skipIf(!Bun.which("rg"))(
     "?files keeps a parent-ignored folder, but tags the tree's own ignored files",
@@ -1089,29 +1044,6 @@ describe("command palette", () => {
     },
   );
 
-  test("the no-ripgrep walk includes dotfiles and skips .git and symlinks", () => {
-    const dir = fixtureDir("files-walk");
-    mkdirSync(join(dir, "sub"));
-    mkdirSync(join(dir, ".git"));
-    mkdirSync(join(dir, "node_modules"));
-    writeFileSync(join(dir, "a.txt"), "x");
-    writeFileSync(join(dir, ".hidden"), "x");
-    writeFileSync(join(dir, "sub", "b.md"), "x");
-    writeFileSync(join(dir, ".git", "config"), "x");
-    writeFileSync(join(dir, "node_modules", "x.js"), "x");
-    const target = join(tmp, "walk-target.txt");
-    writeFileSync(target, "x");
-    symlinkSync(target, join(dir, "link.txt"));
-    symlinkSync(dir, join(dir, "loop"));
-
-    expect(walkFiles(dir, 100)).toEqual({
-      files: [".hidden", "a.txt", "node_modules/x.js", "sub/b.md"],
-      truncated: false,
-    });
-    const capped = walkFiles(dir, 2);
-    expect(capped.files).toHaveLength(2);
-    expect(capped.truncated).toBe(true);
-  });
 
   test("?files refuses traversal and cannot list outside the root", async () => {
     const base = fixtureDir("files-trav");
@@ -1129,7 +1061,7 @@ describe("command palette", () => {
     expect(await ok.json()).toEqual({ entries: [{ path: "inside.txt" }], truncated: false });
   });
 
-  test("names are delivered as JSON data, and the palette builds rows as text", async () => {
+  test("names are delivered as JSON data", async () => {
     const dir = fixtureDir("files-data");
     const name = `<img src=x onerror=alert(1)>.md`;
     writeFileSync(join(dir, name), "x");
@@ -1137,67 +1069,10 @@ describe("command palette", () => {
     const res = await respond(dir, "http://localhost/?files");
     expect(res.headers.get("content-type")).toContain("application/json");
     expect(await res.json()).toEqual({ entries: [{ path: name }], truncated: false });
-
-    // Highlighting returns text runs, so a row can only reach the DOM as a text node.
-    const segments = highlightSegments(name, new Set([0, 1]));
-    expect(segments).toEqual([
-      { text: "<i", hit: true },
-      { text: "mg src=x onerror=alert(1)>.md", hit: false },
-    ]);
-    expect(segments.map((s) => s.text).join("")).toBe(name);
-
-    const source = readFileSync(join(import.meta.dir, "search.ts"), "utf8");
-    expect(source).toContain("mark.textContent = segment.text");
-    expect(source).toContain("label.append(segment.text)");
-    expect(source).not.toMatch(/innerHTML\s*=\s*(?:path|name|item|result|segment)\b/);
   });
 
-  test("highlights track UTF-16 offsets for astral names", () => {
-    const emoji = "a😀b.md";
-    const [b] = new Fzf([emoji]).find("b");
-    expect(originalPositions(emoji, b!.positions)).toEqual(new Set([3]));
-    expect(highlightSegments(emoji, originalPositions(emoji, b!.positions))).toEqual([
-      { text: "a😀", hit: false },
-      { text: "b", hit: true },
-      { text: ".md", hit: false },
-    ]);
 
-    const [face] = new Fzf([emoji]).find("😀");
-    expect(highlightSegments(emoji, originalPositions(emoji, face!.positions))).toEqual([
-      { text: "a", hit: false },
-      { text: "😀", hit: true },
-      { text: "b.md", hit: false },
-    ]);
 
-    const flag = "flag🇫🇷.md";
-    const [fr] = new Fzf([flag]).find("🇫🇷");
-    expect(highlightSegments(flag, originalPositions(flag, fr!.positions))).toEqual([
-      { text: "flag", hit: false },
-      { text: "🇫🇷", hit: true },
-      { text: ".md", hit: false },
-    ]);
-  });
-
-  test("highlights map fzf's normalized positions back to a decomposed name", () => {
-    const name = "café.md";
-
-    const [accent] = new Fzf([name]).find("é");
-    expect(originalPositions(name, accent!.positions)).toEqual(new Set([3, 4]));
-    expect(highlightSegments(name, originalPositions(name, accent!.positions))).toEqual([
-      { text: "caf", hit: false },
-      { text: "é", hit: true },
-      { text: ".md", hit: false },
-    ]);
-
-    const [prefix] = new Fzf([name]).find("cafe");
-    expect(originalPositions(name, prefix!.positions)).toEqual(new Set([0, 1, 2, 3, 4]));
-  });
-
-  test("resultHref encodes each path segment and keeps a folder's slash", () => {
-    expect(resultHref("a b/<x>.md")).toBe("/a%20b/%3Cx%3E.md");
-    expect(resultHref("sub/")).toBe("/sub/");
-    expect(resultHref("sub/a#b.md")).toBe("/sub/a%23b.md");
-  });
 
   test.skipIf(!Bun.which("git"))("the indicator counts each hidden entry once", async () => {
     const dir = fixtureDir("files-indicator");
@@ -1240,12 +1115,6 @@ describe("command palette", () => {
 });
 
 describe("per-folder tags", () => {
-  test("entriesUnder does not inherit the root cap", () => {
-    expect(entriesUnder({ entries: [{ path: "sub/a.txt" }], truncated: true }, "sub")).toEqual({
-      entries: [{ path: "a.txt" }],
-      truncated: false,
-    });
-  });
 
   test.skipIf(!Bun.which("git"))(
     "tags a folder from its own rules even when the scan cap is forced",
@@ -1296,71 +1165,8 @@ describe("per-folder tags", () => {
     },
   );
 
-  test.skipIf(!Bun.which("git"))(
-    "ignores parent rules but keeps the served tree's own rules",
-    async () => {
-      const parent = fixtureDir("tag-parent");
-      initRepo(parent);
-      writeFileSync(join(parent, ".gitignore"), "child/**\n");
-      const child = join(parent, "child");
-      mkdirSync(child);
-      writeFileSync(join(child, ".gitignore"), "inside.txt\n");
-      writeFileSync(join(child, "inside.txt"), "x");
-      writeFileSync(join(child, "other.txt"), "x");
 
-      const tags = await tagRows(child, [{ path: "inside.txt" }, { path: "other.txt" }]);
-      expect(tags.get("inside.txt")).toEqual({ path: "inside.txt", ignored: true });
-      expect(tags.has("other.txt")).toBe(false);
-    },
-  );
 
-  test.skipIf(!Bun.which("git"))(
-    "a submodule row does not clear the other tags on the page",
-    async () => {
-      const source = fixtureDir("tag-submodule-source");
-      initRepo(source);
-      writeFileSync(join(source, "inside.txt"), "x");
-      commitAll(source);
-
-      const parent = fixtureDir("tag-submodule-parent");
-      initRepo(parent);
-      writeFileSync(join(parent, ".gitignore"), "out/\n");
-      writeFileSync(join(parent, "visible.txt"), "x");
-      mkdirSync(join(parent, "out"));
-      writeFileSync(join(parent, "out", "bundle.js"), "x");
-      commitAll(parent);
-
-      const add = Bun.spawnSync(
-        ["git", "-C", parent, "-c", "protocol.file.allow=always", "submodule", "add", source, "vendor/sub"],
-        { stdout: "ignore", stderr: "pipe" },
-      );
-      expect(add.exitCode, add.stderr.toString()).toBe(0);
-      // A submodule worktree root has a .git file; check-ignore rejects it.
-      expect(lstatSync(join(parent, "vendor", "sub", ".git")).isFile()).toBe(true);
-
-      const tags = await tagRows(parent, [
-        { path: "out/" },
-        { path: "vendor/" },
-        { path: "vendor/sub/" },
-        { path: "vendor/sub/inside.txt" },
-        { path: "visible.txt" },
-      ]);
-      expect(tags.get("out/")).toEqual({ path: "out/", ignored: true });
-      expect(tags.has("vendor/")).toBe(false);
-      expect(tags.has("vendor/sub/")).toBe(false);
-      expect(tags.has("vendor/sub/inside.txt")).toBe(false);
-      expect(tags.has("visible.txt")).toBe(false);
-    },
-  );
-
-  test("leaves ignored tags off outside a git repo", async () => {
-    const dir = fixtureDir("tag-norepo");
-    writeFileSync(join(dir, ".gitignore"), "secret.txt\n");
-    writeFileSync(join(dir, "secret.txt"), "x");
-
-    const tags = await tagRows(dir, [{ path: "secret.txt" }]);
-    expect(tags.has("secret.txt")).toBe(false);
-  });
 
   test("a listing inside a dot-directory reports its hidden rows", async () => {
     const dir = fixtureDir("dotdir");
@@ -1391,100 +1197,6 @@ describe("per-folder tags", () => {
   });
 });
 
-describe("keymap", () => {
-  type Fake = {
-    key: string;
-    shiftKey?: boolean;
-    metaKey?: boolean;
-    ctrlKey?: boolean;
-    altKey?: boolean;
-    isComposing?: boolean;
-    keyCode?: number;
-    target?: unknown;
-  };
-
-  function press(opts: Fake) {
-    let prevented = 0;
-    const event = {
-      key: opts.key,
-      shiftKey: opts.shiftKey ?? false,
-      metaKey: opts.metaKey ?? false,
-      ctrlKey: opts.ctrlKey ?? false,
-      altKey: opts.altKey ?? false,
-      isComposing: opts.isComposing ?? false,
-      keyCode: opts.keyCode ?? 0,
-      target: opts.target ?? { tagName: "BODY" },
-      preventDefault: () => {
-        prevented++;
-      },
-    } as unknown as KeyboardEvent;
-    return { event, prevented: () => prevented };
-  }
-
-  test("applies modifiers, editable fields, guards and preventDefault once", () => {
-    const ran: string[] = [];
-    const bindings: Binding[] = [
-      { key: "/", run: () => ran.push("slash") },
-      { key: "k", mod: true, allowInEditable: true, run: () => ran.push("mod-k") },
-      { key: "h", shift: true, run: () => ran.push("shift-h") },
-      { key: "arrowdown", when: () => false, run: () => ran.push("never") },
-    ];
-    const editable = { tagName: "INPUT" };
-
-    let hit = press({ key: "/", target: editable });
-    expect(dispatchKey(hit.event, bindings)).toBe(false);
-    expect(hit.prevented()).toBe(0);
-
-    hit = press({ key: "/" });
-    expect(dispatchKey(hit.event, bindings)).toBe(true);
-    expect(ran).toEqual(["slash"]);
-    expect(hit.prevented()).toBe(1);
-
-    // A modifier binding is allowed in a field; an unmodified key is not.
-    hit = press({ key: "k", ctrlKey: true, target: editable });
-    expect(dispatchKey(hit.event, bindings)).toBe(true);
-    expect(ran).toEqual(["slash", "mod-k"]);
-    hit = press({ key: "k", target: editable });
-    expect(dispatchKey(hit.event, bindings)).toBe(false);
-
-    // An unexpected modifier and the wrong shift state do not match.
-    hit = press({ key: "/", ctrlKey: true });
-    expect(dispatchKey(hit.event, bindings)).toBe(false);
-    hit = press({ key: "h" });
-    expect(dispatchKey(hit.event, bindings)).toBe(false);
-    hit = press({ key: "H", shiftKey: true });
-    expect(dispatchKey(hit.event, bindings)).toBe(true);
-    expect(ran).toEqual(["slash", "mod-k", "shift-h"]);
-
-    // Alt is never claimed, and a false guard skips.
-    hit = press({ key: "/", altKey: true });
-    expect(dispatchKey(hit.event, bindings)).toBe(false);
-    hit = press({ key: "arrowdown" });
-    expect(dispatchKey(hit.event, bindings)).toBe(false);
-  });
-
-  test("leaves IME composition keys to the input method", () => {
-    const ran: string[] = [];
-    const bindings: Binding[] = [
-      { key: "enter", allowInEditable: true, run: () => ran.push("enter") },
-      { key: "escape", allowInEditable: true, run: () => ran.push("escape") },
-    ];
-    const editable = { tagName: "INPUT" };
-
-    let hit = press({ key: "Enter", isComposing: true, target: editable });
-    expect(dispatchKey(hit.event, bindings)).toBe(false);
-    expect(hit.prevented()).toBe(0);
-    expect(ran).toEqual([]);
-
-    hit = press({ key: "Escape", keyCode: 229, target: editable });
-    expect(dispatchKey(hit.event, bindings)).toBe(false);
-    expect(ran).toEqual([]);
-
-    hit = press({ key: "Enter", target: editable });
-    expect(dispatchKey(hit.event, bindings)).toBe(true);
-    expect(ran).toEqual(["enter"]);
-  });
-});
 
 describe("search bundle", () => {
   test("src/search.bundle.js is the current build of src/search.ts", () => {

@@ -1,13 +1,17 @@
 import { readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { closeIcon, fileIcon, folderIcon, folderOpenIcon } from "./icons";
-import { compareEntries, escapeHtml } from "./render";
-import type { Entry as Tagged } from "./files";
+import { compareEntries, escapeHtml, tagAttrs } from "./render";
+import { rowPath, type Entry as Tag, type Row } from "./files";
 
 /** Per-folder cap: one `node_modules` level must not bloat every page. */
 export const MAX_TREE_ENTRIES = 300;
 
 export type TreeEntry = { name: string; dir: boolean };
+
+/** One directory's rows, read once: all entries and the capped ones shown. */
+export type TreeLevel = { rel: string; entries: TreeEntry[]; shown: TreeEntry[] };
+export type TreeLevels = Map<string, TreeLevel>;
 
 /**
  * One directory per call, never a recursive walk. `withFileTypes` avoids a stat
@@ -32,8 +36,10 @@ export function listTree(dir: string): TreeEntry[] {
   return entries;
 }
 
-function hrefFor(rel: string, dir: boolean): string {
-  const encoded = rel.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+function hrefFor(path: string): string {
+  const dir = path.endsWith("/");
+  const bare = dir ? path.slice(0, -1) : path;
+  const encoded = bare.split("/").filter(Boolean).map(encodeURIComponent).join("/");
   if (!encoded) return "/";
   return "/" + encoded + (dir ? "/" : "");
 }
@@ -56,24 +62,71 @@ function depthOf(dirRel: string): number {
   return dirRel ? dirRel.split("/").filter(Boolean).length : 0;
 }
 
-function attrsFor(tags: Map<string, Tagged> | undefined, rel: string, dir: boolean, name: string): string {
-  const tag = tags?.get(dir ? rel + "/" : rel);
-  let attrs = "";
-  if (tag?.hidden || name.startsWith(".")) attrs += " data-hidden";
-  if (tag?.ignored) attrs += " data-ignored";
-  return attrs;
+function makeLevel(rel: string, entries: readonly TreeEntry[]): TreeLevel {
+  const all = [...entries];
+  const shown = all.length > MAX_TREE_ENTRIES ? all.slice(0, MAX_TREE_ENTRIES) : all;
+  return { rel, entries: all, shown };
+}
+
+function levelFor(dirAbs: string, rel: string): TreeLevel | undefined {
+  try {
+    return makeLevel(rel, listTree(dirAbs));
+  } catch {
+    return undefined; // unreadable directory
+  }
+}
+
+function readLevel(rootAbs: string, rel: string, current?: readonly TreeEntry[]): TreeLevel | undefined {
+  if (current) return makeLevel(rel, current);
+  return levelFor(rel ? join(rootAbs, rel) : rootAbs, rel);
+}
+
+/**
+ * Read every expanded level once. A directory listing passes the entries it
+ * already read for the current directory, so that one is not walked twice.
+ */
+export function readTreeLevels(
+  rootAbs: string,
+  activeRel: string,
+  isDir: boolean,
+  current?: readonly TreeEntry[],
+): TreeLevels {
+  const levels: TreeLevels = new Map();
+  for (const rel of expandedDirs(activeRel, isDir)) {
+    const level = readLevel(rootAbs, rel, current && rel === activeRel ? current : undefined);
+    if (level) levels.set(rel, level);
+  }
+  return levels;
+}
+
+/** A single level, for a lazy `?tree` fragment. */
+export function readTreeLevel(rootAbs: string, rel: string): TreeLevels {
+  const levels: TreeLevels = new Map();
+  const level = readLevel(rootAbs, rel);
+  if (level) levels.set(rel, level);
+  return levels;
+}
+
+/** Paths of exactly the rows the sidebar renders, for tagRows. */
+export function treeRowPaths(levels: TreeLevels): Row[] {
+  const rows: Row[] = [];
+  for (const level of levels.values()) {
+    for (const entry of level.shown) rows.push({ path: rowPath(level.rel, entry.name, entry.dir) });
+  }
+  return rows;
 }
 
 function entryLi(
-  dirAbs: string,
   dirRel: string,
   entry: TreeEntry,
   activeRel: string,
-  tags?: Map<string, Tagged>,
+  tags: Map<string, Tag> | undefined,
+  levels: TreeLevels,
 ): string {
-  const rel = dirRel ? `${dirRel}/${entry.name}` : entry.name;
-  const attrs = attrsFor(tags, rel, entry.dir, entry.name);
-  const href = escapeHtml(hrefFor(rel, entry.dir));
+  const path = rowPath(dirRel, entry.name, entry.dir);
+  const rel = entry.dir ? path.slice(0, -1) : path;
+  const attrs = tagAttrs(tags?.get(path), entry.name);
+  const href = escapeHtml(hrefFor(path));
   const label = escapeHtml(entry.name) + (entry.dir ? "/" : "");
   const depth = depthOf(dirRel);
 
@@ -88,31 +141,26 @@ function entryLi(
   const icons = `<span class="ticon ticon-folder">${folderIcon()}</span><span class="ticon ticon-open">${folderOpenIcon()}</span>`;
   // Open only the folders that lead to the current page; the rest load on demand.
   if (here || activeRel.startsWith(rel + "/")) {
-    const children = renderLevel(join(dirAbs, entry.name), rel, activeRel, tags);
+    const children = renderLevel(rel, activeRel, tags, levels);
     return `<li class="d${here ? " current" : ""}"${attrs}><details open data-src="${href}" data-loaded="1"><summary style="--depth:${depth}">${icons}<a href="${href}"${current}>${label}</a></summary>${children}</details></li>`;
   }
   return `<li class="d"${attrs}><details data-src="${href}" data-loaded="0"><summary style="--depth:${depth}">${icons}<a href="${href}">${label}</a></summary><ul></ul></details></li>`;
 }
 
 function renderLevel(
-  dirAbs: string,
   dirRel: string,
   activeRel: string,
-  tags?: Map<string, Tagged>,
+  tags: Map<string, Tag> | undefined,
+  levels: TreeLevels,
 ): string {
-  let entries: TreeEntry[];
-  try {
-    entries = listTree(dirAbs);
-  } catch {
-    return "<ul></ul>"; // unreadable directory
-  }
-  const shown = entries.length > MAX_TREE_ENTRIES ? entries.slice(0, MAX_TREE_ENTRIES) : entries;
+  const level = levels.get(dirRel);
+  if (!level) return "<ul></ul>"; // unreadable directory
 
   let items = "";
-  for (const entry of shown) items += entryLi(dirAbs, dirRel, entry, activeRel, tags);
-  if (entries.length > shown.length) {
-    const rest = entries.length - shown.length;
-    items += `<li class="more"><a href="${escapeHtml(hrefFor(dirRel, true))}" style="--depth:${depthOf(dirRel)}">… ${rest} more</a></li>`;
+  for (const entry of level.shown) items += entryLi(dirRel, entry, activeRel, tags, levels);
+  if (level.entries.length > level.shown.length) {
+    const rest = level.entries.length - level.shown.length;
+    items += `<li class="more"><a href="${escapeHtml(hrefFor(rowPath("", dirRel, true)))}" style="--depth:${depthOf(dirRel)}">… ${rest} more</a></li>`;
   }
   return `<ul>${items}</ul>`;
 }
@@ -121,9 +169,10 @@ function renderLevel(
 export function renderSidebar(
   rootAbs: string,
   activeRel: string,
-  tags?: Map<string, Tagged>,
+  tags: Map<string, Tag> | undefined,
+  levels: TreeLevels,
 ): string {
-  const tree = renderLevel(rootAbs, "", activeRel, tags);
+  const tree = renderLevel("", activeRel, tags, levels);
   const rootLabel = basename(rootAbs) || rootAbs;
   return `<aside class="sidebar" id="serv-tree"><div class="sidebar-brand"><a class="brand" href="/" title="Home">serv<span class="brand-dot">.</span></a><span class="brand-root" title="${escapeHtml(rootAbs)}">${escapeHtml(rootLabel)}</span><button type="button" class="nav-close" title="Close file tree" aria-label="Close file tree">${closeIcon()}</button></div><nav class="tree sidebar-scroll" aria-label="Files">${tree}</nav></aside>`;
 }
@@ -132,7 +181,12 @@ export function renderSidebar(
 export function renderTreeFragment(
   dirAbs: string,
   dirRel: string,
-  tags?: Map<string, Tagged>,
+  tags?: Map<string, Tag>,
+  levels?: TreeLevels,
 ): string {
-  return renderLevel(dirAbs, dirRel, "", tags);
+  if (levels) return renderLevel(dirRel, "", tags, levels);
+  const level = levelFor(dirAbs, dirRel);
+  const map: TreeLevels = new Map();
+  if (level) map.set(dirRel, level);
+  return renderLevel(dirRel, "", tags, map);
 }
