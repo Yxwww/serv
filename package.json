@@ -1,6 +1,6 @@
 {
   "name": "serv",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A tiny local web server that renders Markdown and serves everything else as-is.",
   "type": "module",
   "bin": {
@@ -8,14 +8,17 @@
   },
   "files": [
     "src",
-    "!src/*.test.ts"
+    "THIRD_PARTY_NOTICES.md",
+    "!src/*.test.ts",
+    "!src/styles.input.css"
   ],
   "engines": {
     "bun": ">=1.3.8"
   },
   "scripts": {
     "test": "bun test",
-    "start": "bun run src/cli.ts"
+    "start": "bun run src/cli.ts",
+    "build:css": "tailwindcss -i ./src/styles.input.css -o ./src/styles.css --minify"
   },
   "keywords": [
     "bun",
@@ -25,5 +28,12 @@
     "preview"
   ],
   "license": "MIT",
-  "author": "Yuxi Wang"
+  "author": "Yuxi Wang",
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.5",
+    "@tailwindcss/typography": "0.5.20",
+    "@types/bun": "1.4.5",
+    "tailwindcss": "4.3.5",
+    "typescript": "7.0.2"
+  }
 }
