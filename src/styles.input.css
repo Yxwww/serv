@@ -1249,3 +1249,211 @@ body.nav-open .nav-backdrop {
 .not-found a {
   color: var(--color-accent-text);
 }
+
+/* ---------------------------------------------------------------------------
+   Command palette (/ or Cmd/Ctrl+K)
+   ------------------------------------------------------------------------- */
+body.serv-palette-open {
+  overflow: hidden;
+}
+
+.palette {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 1rem 1rem;
+}
+
+.palette[hidden] {
+  display: none;
+}
+
+.palette-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 0.45);
+}
+
+.palette-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(40rem, 100%);
+  max-height: min(70vh, 40rem);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.palette-input {
+  width: 100%;
+  padding: 0.875rem 1rem;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  outline: none;
+}
+
+.palette-input::placeholder {
+  color: var(--color-disabled);
+}
+
+.palette-list {
+  margin: 0;
+  padding: 0.25rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.palette-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--radius-md);
+  color: var(--color-primary);
+  font-size: var(--text-base);
+  cursor: pointer;
+}
+
+.palette-option.is-active {
+  background: var(--color-selected);
+}
+
+.palette-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--color-secondary);
+}
+
+.palette-icon .icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.palette-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-hit {
+  background: none;
+  color: var(--color-accent-text);
+  font-weight: 600;
+}
+
+.palette-empty {
+  padding: 1rem 0.75rem;
+  color: var(--color-secondary);
+  font-size: var(--text-base);
+}
+
+.palette-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-secondary);
+  font-size: var(--text-sm);
+}
+
+.palette-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-keys {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.palette-keys kbd {
+  padding: 0 0.3rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  background: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 599.98px) {
+  .palette {
+    padding: 6vh 0.75rem 1rem;
+  }
+
+  .palette-keys {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Hidden and ignored rows
+   ------------------------------------------------------------------------- */
+/* Dotfiles stay hidden without JS. Ignored entries need the head script's
+   serv-js class, so a no-JS reader still sees them; the saved choices are
+   applied before first paint when JS does run. */
+html:not(.serv-show-hidden) [data-hidden] {
+  display: none;
+}
+
+html.serv-js:not(.serv-show-ignored) [data-ignored] {
+  display: none;
+}
+
+.panel-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.hidden-count {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-disabled);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.hidden-count:hover {
+  color: var(--color-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.hidden-count[hidden] {
+  display: none;
+}
+
+/* The count is a button; without JS it cannot do anything. */
+html:not(.serv-js) .hidden-count {
+  display: none;
+}
+
+/* The pre-paint script may have shown both kinds before the client runs. */
+html.serv-show-hidden.serv-show-ignored .hidden-count {
+  display: none;
+}

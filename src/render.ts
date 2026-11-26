@@ -2,7 +2,20 @@ import { readdirSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { fileIcon, folderIcon, menuIcon } from "./icons";
 import { IMAGE_EXTS } from "./types";
+import type { Entry as Tagged } from "./files";
 import css from "./styles.css" with { type: "text" };
+import searchScript from "./search.bundle.js" with { type: "text" };
+
+/** One default each; the client toggles these and the head script restores them. */
+export const SHOW_HIDDEN_DEFAULT = false;
+export const SHOW_IGNORED_DEFAULT = false;
+const DEFAULT_CLASSES = [
+  SHOW_HIDDEN_DEFAULT && "serv-show-hidden",
+  SHOW_IGNORED_DEFAULT && "serv-show-ignored",
+].filter(Boolean).join(" ");
+
+// Runs in <head>, so rows are already hidden or shown on the first paint.
+const PRE_PAINT = `(function(){var e=document.documentElement;e.classList.add("serv-js");try{var h=localStorage.getItem("serv-show-hidden");var i=localStorage.getItem("serv-show-ignored");if(h!==null)e.classList.toggle("serv-show-hidden",h==="1");if(i!==null)e.classList.toggle("serv-show-ignored",i==="1")}catch(_){}})()`;
 
 // Inline so a page never asks the server for an icon. The style element keeps
 // the square readable in dark mode when the browser paints a dark tab strip.
@@ -72,9 +85,6 @@ document.addEventListener("toggle", function (event) {
   toggle.addEventListener("click", function () { setOpen(!isOpen(), true); });
   if (close) close.addEventListener("click", function () { setOpen(false, true); });
   if (backdrop) backdrop.addEventListener("click", function () { setOpen(false, true); });
-  document.addEventListener("keydown", function (event) {
-    if (event.key === "Escape" && isOpen()) setOpen(false, true);
-  });
   wide.addEventListener("change", sync);
   sync();
 })();
@@ -156,6 +166,15 @@ const LISTING_SCRIPT = `
   }
 })();
 `;
+
+const PALETTE = `<div class="palette" id="serv-palette" hidden>
+<div class="palette-backdrop" data-palette-close></div>
+<div class="palette-panel" role="dialog" aria-modal="true" aria-label="Search files">
+<input id="serv-search-input" class="palette-input" type="text" placeholder="Search files…" role="combobox" aria-expanded="false" aria-controls="serv-search-list" aria-autocomplete="list" aria-label="Search files" autocomplete="off" spellcheck="false">
+<ul id="serv-search-list" class="palette-list" role="listbox" aria-label="Files"></ul>
+<div class="palette-foot"><span id="serv-search-status" class="palette-status" aria-live="polite"></span><span class="palette-keys" aria-hidden="true"><kbd>↑</kbd><kbd>↓</kbd> move <kbd>↵</kbd> open <kbd>esc</kbd> close</span></div>
+</div>
+</div>`;
 
 /** Entries per view before the "show all" link; same ceiling as the tree. */
 export const ENTRY_LIMIT = 300;
@@ -263,13 +282,14 @@ function pageShell(opts: {
   const bodyScript = opts.bodyScript ? `<script>${opts.bodyScript}</script>` : "";
   const fullPath = "/" + opts.crumbs.slice(1).map((c) => c.label).join("/");
   return `<!doctype html>
-<html lang="en">
+<html lang="en"${DEFAULT_CLASSES ? ` class="${DEFAULT_CLASSES}"` : ""}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>${escapeHtml(opts.title)}</title>
 <link rel="icon" type="image/svg+xml" href="${FAVICON}">
+<script>${PRE_PAINT}</script>
 <style>${css}</style>
 ${opts.sidebar ? `<noscript><style>@media (max-width: 799.98px) {
   .sidebar { position: static; inset: auto; width: auto; max-height: 50dvh; transform: none; visibility: visible; border-right: 0; border-bottom: 1px solid var(--color-border); }
@@ -289,7 +309,8 @@ ${raw}
 </div>
 </div>
 ${backdrop}
-${script}${bodyScript}
+${PALETTE}
+${script}${bodyScript}<script type="module">${searchScript}</script>
 </body>
 </html>`;
 }
@@ -355,7 +376,7 @@ export function compareEntries(a: { name: string; dir: boolean }, b: { name: str
 export function listEntries(dir: string): Entry[] {
   const entries: Entry[] = [];
   for (const dirent of readdirSync(dir, { withFileTypes: true })) {
-    if (dirent.name.startsWith(".")) continue;
+    if (dirent.name === ".git") continue;
     let stat;
     try {
       stat = statSync(join(dir, dirent.name));
@@ -439,7 +460,14 @@ function viewToggle(active: View, showAll: boolean): string {
   return `<div class="view-toggle" role="group" aria-label="View as">${option("list")}${option("grid")}</div>`;
 }
 
-function gridCard(entry: Entry): string {
+function rowAttrs(tag: Tagged | undefined): string {
+  let attrs = "";
+  if (tag?.hidden) attrs += " data-hidden";
+  if (tag?.ignored) attrs += " data-ignored";
+  return attrs;
+}
+
+function gridCard(entry: Entry, tag: Tagged | undefined): string {
   const href = encodeURIComponent(entry.name) + (entry.dir ? "/" : "");
   const name = escapeHtml(entry.name);
   const label = name + (entry.dir ? "/" : "");
@@ -452,13 +480,19 @@ function gridCard(entry: Entry): string {
     thumb = `<span class="grid-thumb">${fileIcon(entry.name)}</span>`;
   }
   const sub = entry.dir ? "Folder" : `${formatSize(entry.size)} &middot; ${formatTime(entry.mtime)}`;
-  return `<li><a class="grid-card" href="${href}" title="${name}">${thumb}<span class="grid-meta"><span class="grid-name" title="${name}">${label}</span><span class="grid-sub">${sub}</span></span></a></li>`;
+  return `<li${rowAttrs(tag)}><a class="grid-card" href="${href}" title="${name}">${thumb}<span class="grid-meta"><span class="grid-name" title="${name}">${label}</span><span class="grid-sub">${sub}</span></span></a></li>`;
+}
+
+function hiddenIndicator(count: number): string {
+  const label = count === 1 ? "entry" : "entries";
+  return `<button type="button" class="hidden-count" data-serv-hidden-count aria-label="Show ${count} hidden ${label}" title="Shift+H dotfiles · Shift+I ignored"${count ? "" : " hidden"}>${count} hidden</button>`;
 }
 
 export function renderListing(opts: {
   rootLabel: string;
   rel: string;
   entries: Entry[];
+  tags?: Map<string, Tagged>;
   readmeHtml?: string;
   readmeTruncated?: number;
   sidebar?: string;
@@ -468,8 +502,23 @@ export function renderListing(opts: {
   const activeView: View = opts.view ?? "grid";
   const showAll = opts.showAll === true;
   const readmeHref = rawHrefFor(opts.rel ? `${opts.rel}/README.md` : "README.md");
+  const tagFor = (entry: Entry): Tagged | undefined => {
+    const path = (opts.rel ? `${opts.rel}/` : "") + entry.name + (entry.dir ? "/" : "");
+    const tag = opts.tags?.get(path);
+    if (tag) return tag;
+    // Without a scan, a dot-name is still a hidden row.
+    return entry.name.startsWith(".") ? { path, hidden: true } : undefined;
+  };
 
   const shown = showAll ? opts.entries : opts.entries.slice(0, ENTRY_LIMIT);
+  // One entry per row; a dotfile that is also ignored counts once.
+  let hiddenCount = 0;
+  for (const entry of shown) {
+    const tag = tagFor(entry);
+    const hidden = (tag?.hidden && !SHOW_HIDDEN_DEFAULT) || (tag?.ignored && !SHOW_IGNORED_DEFAULT);
+    if (hidden) hiddenCount++;
+  }
+  const indicator = hiddenIndicator(hiddenCount);
   const rows = shown
     .map((e) => {
       const href = encodeURIComponent(e.name) + (e.dir ? "/" : "");
@@ -477,7 +526,7 @@ export function renderListing(opts: {
       const cls = e.dir ? ' class="entry-dir"' : "";
       const size = e.dir ? "" : formatSize(e.size);
       const icon = e.dir ? folderIcon() : fileIcon(e.name);
-      return `<tr><td class="name"><span class="ticon">${icon}</span><a${cls} href="${href}" title="${escapeHtml(e.name)}">${label}</a></td><td class="size">${size}</td><td class="mtime">${formatTime(e.mtime)}</td></tr>`;
+      return `<tr${rowAttrs(tagFor(e))}><td class="name"><span class="ticon">${icon}</span><a${cls} href="${href}" title="${escapeHtml(e.name)}">${label}</a></td><td class="size">${size}</td><td class="mtime">${formatTime(e.mtime)}</td></tr>`;
     })
     .join("\n");
 
@@ -487,7 +536,7 @@ export function renderListing(opts: {
 ${rows}
 </tbody>
 </table>`;
-  const cards = shown.map(gridCard).join("\n");
+  const cards = shown.map((entry) => gridCard(entry, tagFor(entry))).join("\n");
   const more = (view: View) =>
     !showAll && shown.length < opts.entries.length
       ? `<p class="listing-more-wrap"><a class="listing-more" href="?view=${view}&amp;showall=1">Show all ${opts.entries.length}</a></p>`
@@ -497,7 +546,7 @@ ${cards}
 </ul>${more("grid")}`;
   const list = `${table}${more("list")}`;
 
-  const filesHead = `<div class="panel-head"><h2 class="panel-title">Files <span class="panel-count">${opts.entries.length}</span></h2>${viewToggle(activeView, showAll)}</div>`;
+  const filesHead = `<div class="panel-head"><h2 class="panel-title">Files <span class="panel-count">${opts.entries.length}</span></h2><div class="panel-tools">${indicator}${viewToggle(activeView, showAll)}</div></div>`;
   const filesPanel = `<section class="files-panel${opts.readmeHtml ? "" : " files-panel-full"}" data-listing-view data-view="${activeView}">${filesHead}<div class="listing-views">
 <div class="listing-view" data-view-panel="list"${activeView === "grid" ? " hidden" : ""}>${list}</div>
 <div class="listing-view" data-view-panel="grid"${activeView === "list" ? " hidden" : ""}>${grid}</div>
@@ -570,12 +619,6 @@ export function renderImageViewer(opts: ViewerBase & {
   }
   if (img.complete) show();
   img.addEventListener("load", show);
-  document.addEventListener("keydown", function (event) {
-    if (event.altKey || event.ctrlKey || event.metaKey) return;
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    var link = document.querySelector(event.key === "ArrowLeft" ? '.image-step[rel="prev"]' : '.image-step[rel="next"]');
-    if (link) { event.preventDefault(); link.click(); }
-  });
 })();`,
   });
 }
