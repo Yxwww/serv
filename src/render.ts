@@ -2,7 +2,8 @@ import { readdirSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { fileIcon, folderIcon, menuIcon } from "./icons";
 import { IMAGE_EXTS } from "./types";
-import type { Entry as Tagged } from "./files";
+import { isHiddenPath, rowPath, type Entry as Tag } from "./files";
+import { SHOW_HIDDEN_CLASS, SHOW_IGNORED_CLASS, rowHidden } from "./visibility";
 import css from "./styles.css" with { type: "text" };
 import searchScript from "./search.bundle.js" with { type: "text" };
 
@@ -10,12 +11,12 @@ import searchScript from "./search.bundle.js" with { type: "text" };
 export const SHOW_HIDDEN_DEFAULT = false;
 export const SHOW_IGNORED_DEFAULT = false;
 const DEFAULT_CLASSES = [
-  SHOW_HIDDEN_DEFAULT && "serv-show-hidden",
-  SHOW_IGNORED_DEFAULT && "serv-show-ignored",
+  SHOW_HIDDEN_DEFAULT && SHOW_HIDDEN_CLASS,
+  SHOW_IGNORED_DEFAULT && SHOW_IGNORED_CLASS,
 ].filter(Boolean).join(" ");
 
 // Runs in <head>, so rows are already hidden or shown on the first paint.
-const PRE_PAINT = `(function(){var e=document.documentElement;e.classList.add("serv-js");try{var h=localStorage.getItem("serv-show-hidden");var i=localStorage.getItem("serv-show-ignored");if(h!==null)e.classList.toggle("serv-show-hidden",h==="1");if(i!==null)e.classList.toggle("serv-show-ignored",i==="1")}catch(_){}})()`;
+export const PRE_PAINT = `(function(){var e=document.documentElement;e.classList.add("serv-js");try{var h=localStorage.getItem("${SHOW_HIDDEN_CLASS}");var i=localStorage.getItem("${SHOW_IGNORED_CLASS}");if(h!==null)e.classList.toggle("${SHOW_HIDDEN_CLASS}",h==="1");if(i!==null)e.classList.toggle("${SHOW_IGNORED_CLASS}",i==="1")}catch(_){}})()`;
 
 // Inline so a page never asks the server for an icon. The style element keeps
 // the square readable in dark mode when the browser paints a dark tab strip.
@@ -460,14 +461,16 @@ function viewToggle(active: View, showAll: boolean): string {
   return `<div class="view-toggle" role="group" aria-label="View as">${option("list")}${option("grid")}</div>`;
 }
 
-function rowAttrs(tag: Tagged | undefined): string {
+/** The tag attributes shared by listings, grid cards and the sidebar tree. */
+export function tagAttrs(tag: Tag | undefined, name: string): string {
   let attrs = "";
-  if (tag?.hidden) attrs += " data-hidden";
+  // `name` is a basename, so this is isHiddenPath without the per-row split.
+  if (tag?.hidden || name.startsWith(".")) attrs += " data-hidden";
   if (tag?.ignored) attrs += " data-ignored";
   return attrs;
 }
 
-function gridCard(entry: Entry, tag: Tagged | undefined): string {
+function gridCard(entry: Entry, tag: Tag | undefined): string {
   const href = encodeURIComponent(entry.name) + (entry.dir ? "/" : "");
   const name = escapeHtml(entry.name);
   const label = name + (entry.dir ? "/" : "");
@@ -480,7 +483,7 @@ function gridCard(entry: Entry, tag: Tagged | undefined): string {
     thumb = `<span class="grid-thumb">${fileIcon(entry.name)}</span>`;
   }
   const sub = entry.dir ? "Folder" : `${formatSize(entry.size)} &middot; ${formatTime(entry.mtime)}`;
-  return `<li${rowAttrs(tag)}><a class="grid-card" href="${href}" title="${name}">${thumb}<span class="grid-meta"><span class="grid-name" title="${name}">${label}</span><span class="grid-sub">${sub}</span></span></a></li>`;
+  return `<li${tagAttrs(tag, entry.name)}><a class="grid-card" href="${href}" title="${name}">${thumb}<span class="grid-meta"><span class="grid-name" title="${name}">${label}</span><span class="grid-sub">${sub}</span></span></a></li>`;
 }
 
 function hiddenIndicator(count: number): string {
@@ -488,11 +491,16 @@ function hiddenIndicator(count: number): string {
   return `<button type="button" class="hidden-count" data-serv-hidden-count aria-label="Show ${count} hidden ${label}" title="Shift+H dotfiles · Shift+I ignored"${count ? "" : " hidden"}>${count} hidden</button>`;
 }
 
+/** Exactly the rows a listing renders: the cap rule lives here, not in the caller. */
+export function shownEntries<T>(entries: readonly T[], showAll: boolean): readonly T[] {
+  return showAll ? entries : entries.slice(0, ENTRY_LIMIT);
+}
+
 export function renderListing(opts: {
   rootLabel: string;
   rel: string;
   entries: Entry[];
-  tags?: Map<string, Tagged>;
+  tags?: Map<string, Tag>;
   readmeHtml?: string;
   readmeTruncated?: number;
   sidebar?: string;
@@ -502,21 +510,22 @@ export function renderListing(opts: {
   const activeView: View = opts.view ?? "grid";
   const showAll = opts.showAll === true;
   const readmeHref = rawHrefFor(opts.rel ? `${opts.rel}/README.md` : "README.md");
-  const tagFor = (entry: Entry): Tagged | undefined => {
-    const path = (opts.rel ? `${opts.rel}/` : "") + entry.name + (entry.dir ? "/" : "");
+  const tagFor = (entry: Entry): Tag | undefined => {
+    const path = rowPath(opts.rel, entry.name, entry.dir);
     const tag = opts.tags?.get(path);
     if (tag) return tag;
     // Without a scan, a dot-name is still a hidden row.
-    return entry.name.startsWith(".") ? { path, hidden: true } : undefined;
+    return isHiddenPath(entry.name) ? { path, hidden: true } : undefined;
   };
 
-  const shown = showAll ? opts.entries : opts.entries.slice(0, ENTRY_LIMIT);
+  const shown = shownEntries(opts.entries, showAll);
   // One entry per row; a dotfile that is also ignored counts once.
   let hiddenCount = 0;
   for (const entry of shown) {
     const tag = tagFor(entry);
-    const hidden = (tag?.hidden && !SHOW_HIDDEN_DEFAULT) || (tag?.ignored && !SHOW_IGNORED_DEFAULT);
-    if (hidden) hiddenCount++;
+    if (rowHidden(tag?.hidden ?? false, tag?.ignored ?? false, SHOW_HIDDEN_DEFAULT, SHOW_IGNORED_DEFAULT)) {
+      hiddenCount++;
+    }
   }
   const indicator = hiddenIndicator(hiddenCount);
   const rows = shown
@@ -526,7 +535,7 @@ export function renderListing(opts: {
       const cls = e.dir ? ' class="entry-dir"' : "";
       const size = e.dir ? "" : formatSize(e.size);
       const icon = e.dir ? folderIcon() : fileIcon(e.name);
-      return `<tr${rowAttrs(tagFor(e))}><td class="name"><span class="ticon">${icon}</span><a${cls} href="${href}" title="${escapeHtml(e.name)}">${label}</a></td><td class="size">${size}</td><td class="mtime">${formatTime(e.mtime)}</td></tr>`;
+      return `<tr${tagAttrs(tagFor(e), e.name)}><td class="name"><span class="ticon">${icon}</span><a${cls} href="${href}" title="${escapeHtml(e.name)}">${label}</a></td><td class="size">${size}</td><td class="mtime">${formatTime(e.mtime)}</td></tr>`;
     })
     .join("\n");
 

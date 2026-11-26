@@ -1,8 +1,6 @@
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-
-/** One list has to fit comfortably in a response and in the client's memory. */
-export const FILE_LIMIT = 50_000;
+import { FILE_LIMIT } from "./visibility";
 
 /** A root scan is two ripgrep passes; a burst of pages should reuse one. */
 const CACHE_TTL_MS = 30_000;
@@ -62,14 +60,12 @@ export function entriesUnder(scan: FileList, rel: string): FileList {
   return { entries, truncated: entries.length >= FILE_LIMIT };
 }
 
-/** Look up one entry by its root-relative path, with a trailing slash for dirs. */
-export function tagMap(scan: FileList): Map<string, Entry> {
-  const map = new Map<string, Entry>();
-  for (const entry of scan.entries) map.set(entry.path, entry);
-  return map;
-}
-
 export type Row = { path: string };
+
+/** Root-relative path of a row: `rel/name`, with a trailing slash for a directory. */
+export function rowPath(rel: string, name: string, dir = false): string {
+  return `${rel ? rel + "/" : ""}${name}${dir ? "/" : ""}`;
+}
 
 type Repo = { git: string; top: string };
 const repoCache = new Map<string, Repo | null>();
@@ -188,6 +184,11 @@ async function ignoredRowsSplit(repo: Repo, root: string, rows: readonly Row[]):
  * a repo, there is no ignored tagging; hidden (dot) paths still count.
  */
 export async function tagRows(root: string, rows: readonly Row[]): Promise<Map<string, Entry>> {
+  // One row per path: callers may union the sidebar and listing row sets.
+  const unique = new Map<string, Row>();
+  for (const row of rows) unique.set(row.path, row);
+  rows = [...unique.values()];
+
   const tags = new Map<string, Entry>();
   for (const row of rows) {
     if (isHiddenPath(row.path)) tags.set(row.path, { path: row.path, hidden: true });
@@ -257,11 +258,11 @@ async function collect(root: string, limit: number): Promise<FileList> {
   // Visible first: if it already fills the budget there is nothing to add.
   const visible = await runRg(rg, root, VISIBLE_ARGS, limit);
   if (!visible) return fallback(root, limit);
-  if (visible.truncated) return combineFiles(visible.files, [], true, false, limit);
+  if (visible.truncated) return combineFiles(visible, { files: [], truncated: false }, limit);
 
   const all = await runRg(rg, root, ALL_ARGS, limit);
   if (!all) return fallback(root, limit);
-  return combineFiles(visible.files, all.files, false, all.truncated, limit);
+  return combineFiles(visible, all, limit);
 }
 
 // cwd is always the served root, so `--no-ignore-parent` drops rules above the
@@ -283,13 +284,13 @@ export function isHiddenPath(path: string): boolean {
 
 /** Merge both passes into tagged entries in path order; the cap favors non-ignored paths. Exported for tests. */
 export function combineFiles(
-  visibleFiles: string[],
-  allFiles: string[],
-  visibleTruncated: boolean,
-  allTruncated: boolean,
+  visible: { files: string[]; truncated: boolean },
+  all: { files: string[]; truncated: boolean },
   limit: number,
 ): FileList {
-  const visible = new Set(visibleFiles);
+  const visibleFiles = visible.files;
+  const allFiles = all.files;
+  const visibleSet = new Set(visibleFiles);
   const files = new Set(allFiles);
   for (const file of visibleFiles) files.add(file);
 
@@ -298,12 +299,12 @@ export function combineFiles(
   for (const file of files) {
     const entry: Entry = { path: file };
     if (isHiddenPath(file)) entry.hidden = true;
-    if (!visible.has(file)) entry.ignored = true;
+    if (!visibleSet.has(file)) entry.ignored = true;
     entries.set(file, entry);
     let slash = file.lastIndexOf("/");
     while (slash > 0) {
       const dir = file.slice(0, slash + 1);
-      if (visible.has(file)) dirs.set(dir, true);
+      if (visibleSet.has(file)) dirs.set(dir, true);
       else if (!dirs.has(dir)) dirs.set(dir, false);
       slash = file.lastIndexOf("/", slash - 1);
     }
@@ -320,7 +321,7 @@ export function combineFiles(
   const byPath = (a: Entry, b: Entry): number =>
     a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
   const list = [...entries.values()].sort(byPath);
-  const truncated = visibleTruncated || allTruncated || list.length > limit;
+  const truncated = visible.truncated || all.truncated || list.length > limit;
   if (list.length <= limit) return { entries: list, truncated };
 
   const kept: Entry[] = [];
@@ -339,7 +340,7 @@ export function combineFiles(
 /** Without ripgrep there is no ignore reader, so everything is visible. */
 function fallback(root: string, limit: number): FileList {
   const walk = walkFiles(root, limit);
-  return combineFiles(walk.files, walk.files, walk.truncated, false, limit);
+  return combineFiles(walk, walk, limit);
 }
 
 /**

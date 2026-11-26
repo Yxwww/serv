@@ -13,13 +13,16 @@ else as bytes. Keep it plain and dependency-free.
 - `src/cli.ts` — argument parsing, port walk, browser open; hands requests to `respond`.
 - `src/serve.ts` — routing, containment, `Sec-Fetch-Dest` gate, raw file responses, Range/HEAD, content types.
 - `src/render.ts` — page shell, listing/grid/list, README split, Markdown/source/viewers, escaping, inline scripts.
-- `src/tree.ts` — sidebar tree and lazy `?tree` fragments.
+- `src/tree.ts` — sidebar tree and lazy `?tree` fragments; reads each expanded level once and returns it for both rendering and tagging.
 - `src/files.ts` — the cached `?files` scan (two `rg --files` passes, or a capped walk without rg) plus `tagRows`, the per-folder `git check-ignore` tagger used by listings, the sidebar and `?tree`.
 - `src/search.ts` → `src/search.bundle.js` — browser command palette (fzf ranking), the hidden-entry indicator, and the one page-wide keymap; bundled and committed, tested for staleness.
 - `src/icons.ts` — inline Lucide SVGs; no icon requests.
 - `src/types.ts` — the single extension/name table shared by routing, viewers, and icons.
+- `src/visibility.ts` — browser-safe visibility classes, the file cap, and the hidden-row rule shared by the page and the browser bundle.
 - `src/styles.input.css` → `src/styles.css` — Tailwind input; generated CSS is committed and tested for staleness.
-- `src/serve.test.ts` — routing, rendering, CSS, security, and media tests.
+- `src/serve.test.ts` — routing, rendering, CSS, security, media and integration tests.
+- `src/files.test.ts` — scan/merge/walk/reader and `tagRows` unit tests.
+- `src/search.test.ts` — palette helpers, highlighting, and keymap/persistence wiring tested against a fake DOM.
 - `.github/workflows/ci.yml` — Bun 1.3.8, `bun test`, `bunx tsc --noEmit`.
 
 ## Invariants

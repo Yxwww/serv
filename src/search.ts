@@ -1,5 +1,7 @@
 import { Fzf, type FzfResultItem } from "fzf";
 import { fileIcon, folderIcon } from "./icons";
+import type { Entry as FileEntry, FileList } from "./files";
+import { FILE_LIMIT, SHOW_HIDDEN_CLASS, SHOW_IGNORED_CLASS, rowHidden } from "./visibility";
 
 // ---------------------------------------------------------------------------
 // Pure helpers, exported so tests can prove names stay data.
@@ -77,9 +79,12 @@ export function isEditable(target: EventTarget | null): boolean {
 // One keymap for every page. Binding.key is the lowercased event.key.
 // ---------------------------------------------------------------------------
 
+/** A symbol like "/" may need Shift on some layouts; "any" matches either state. */
+type ShiftRule = boolean | "any";
+
 export type Binding = {
   key: string;
-  shift?: boolean;
+  shift?: ShiftRule;
   mod?: boolean; // meta or ctrl
   allowInEditable?: boolean;
   when?: () => boolean;
@@ -94,7 +99,7 @@ export function dispatchKey(event: KeyboardEvent, bindings: readonly Binding[]):
   const mod = event.metaKey || event.ctrlKey;
   for (const binding of bindings) {
     if (event.key.toLowerCase() !== binding.key) continue;
-    if (!!binding.shift !== event.shiftKey) continue;
+    if (binding.shift !== "any" && !!binding.shift !== event.shiftKey) continue;
     if (!!binding.mod !== mod) continue;
     if (!binding.allowInEditable && isEditable(event.target)) continue;
     if (binding.when && !binding.when()) continue;
@@ -107,17 +112,11 @@ export function dispatchKey(event: KeyboardEvent, bindings: readonly Binding[]):
 
 export const RESULT_LIMIT = 50;
 
-type FileEntry = { path: string; hidden?: boolean; ignored?: boolean };
-type FileList = { entries: FileEntry[]; truncated: boolean };
-type Search = { find(query: string): FzfResultItem<FileEntry>[] };
-
 // ---------------------------------------------------------------------------
 // Browser wiring.
 // ---------------------------------------------------------------------------
 
 const OPTION_ID = "serv-search-opt-";
-const SHOW_HIDDEN = "serv-show-hidden";
-const SHOW_IGNORED = "serv-show-ignored";
 
 export function initSearch(doc: Document): void {
   const palette = doc.getElementById("serv-palette");
@@ -129,14 +128,14 @@ export function initSearch(doc: Document): void {
   let allEntries: FileEntry[] | null = null;
   let visibleEntries: FileEntry[] = [];
   let truncated = false;
-  let search: Search | null = null;
+  let search: Fzf<FileEntry[]> | null = null;
   let results: FzfResultItem<FileEntry>[] = [];
   let active = 0;
   let loading = false;
   let failed = false;
   let returnFocus: Element | null = null;
-  let showHidden = doc.documentElement.classList.contains(SHOW_HIDDEN);
-  let showIgnored = doc.documentElement.classList.contains(SHOW_IGNORED);
+  let showHidden = doc.documentElement.classList.contains(SHOW_HIDDEN_CLASS);
+  let showIgnored = doc.documentElement.classList.contains(SHOW_IGNORED_CLASS);
 
   const isPaletteOpen = (): boolean => !palette!.hidden;
 
@@ -311,9 +310,9 @@ export function initSearch(doc: Document): void {
       parts.push(`${results.length}${more} ${label}`, `${total.toLocaleString()} paths`);
     } else {
       parts.push(`${total.toLocaleString()} paths`);
-      if (total > RESULT_LIMIT) parts.push("showing first 50");
+      if (total > RESULT_LIMIT) parts.push(`showing first ${RESULT_LIMIT}`);
     }
-    if (truncated) parts.push("showing first 50k");
+    if (truncated) parts.push(`showing first ${FILE_LIMIT / 1000}k`);
     return parts.join(" · ");
   }
 
@@ -322,9 +321,9 @@ export function initSearch(doc: Document): void {
     if (!button) return;
     let count = 0;
     for (const row of doc.querySelectorAll<HTMLElement>(".listing tbody tr")) {
-      const hidden = row.hasAttribute("data-hidden") && !showHidden;
-      const ignored = row.hasAttribute("data-ignored") && !showIgnored;
-      if (hidden || ignored) count++; // one entry per row, even if both tags apply
+      if (rowHidden(row.hasAttribute("data-hidden"), row.hasAttribute("data-ignored"), showHidden, showIgnored)) {
+        count++; // one entry per row, even if both tags apply
+      }
     }
     button.hidden = count === 0;
     button.textContent = `${count} hidden`;
@@ -333,7 +332,7 @@ export function initSearch(doc: Document): void {
   }
 
   function setShown(kind: "hidden" | "ignored", on: boolean): void {
-    const cls = kind === "hidden" ? SHOW_HIDDEN : SHOW_IGNORED;
+    const cls = kind === "hidden" ? SHOW_HIDDEN_CLASS : SHOW_IGNORED_CLASS;
     doc.documentElement.classList.toggle(cls, on);
     try {
       localStorage.setItem(cls, on ? "1" : "0");
@@ -381,7 +380,7 @@ export function initSearch(doc: Document): void {
   const bindings: Binding[] = [
     { key: "escape", allowInEditable: true, when: isPaletteOpen, run: close },
     { key: "escape", when: navOpen, run: () => (doc.querySelector(".nav-close") as HTMLElement | null)?.click() },
-    { key: "/", when: () => !isPaletteOpen(), run: open },
+    { key: "/", shift: "any", when: () => !isPaletteOpen(), run: open },
     { key: "k", mod: true, allowInEditable: true, when: () => !isPaletteOpen(), run: open },
     { key: "h", shift: true, when: () => !isPaletteOpen(), run: () => toggle("hidden") },
     { key: "i", shift: true, when: () => !isPaletteOpen(), run: () => toggle("ignored") },
