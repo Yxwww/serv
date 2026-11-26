@@ -158,7 +158,7 @@ const LISTING_SCRIPT = `
 `;
 
 /** Entries per view before the "show all" link; same ceiling as the tree. */
-export const GRID_LIMIT = 300;
+export const ENTRY_LIMIT = 300;
 
 type View = "list" | "grid";
 
@@ -469,7 +469,7 @@ export function renderListing(opts: {
   const showAll = opts.showAll === true;
   const readmeHref = rawHrefFor(opts.rel ? `${opts.rel}/README.md` : "README.md");
 
-  const shown = showAll ? opts.entries : opts.entries.slice(0, GRID_LIMIT);
+  const shown = showAll ? opts.entries : opts.entries.slice(0, ENTRY_LIMIT);
   const rows = shown
     .map((e) => {
       const href = encodeURIComponent(e.name) + (e.dir ? "/" : "");

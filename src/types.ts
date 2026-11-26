@@ -16,9 +16,21 @@ export const CODE_EXTS = new Set([
   ".css", ".scss", ".less",
   ".toml", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".env",
   ".sql",
+  ".xml", ".lock", ".patch", ".diff", ".graphql", ".gql", ".proto",
+  ".svelte", ".vue", ".astro", ".tf", ".hcl", ".gradle", ".properties",
 ]);
 
 export const TEXT_EXTS = new Set([".txt", ".log", ".csv", ".tsv", ".rst", ".mdx"]);
+
+/** Dotfiles whose extension is absent or ambiguous; handled by name, not suffix. */
+export const TEXT_NAMES = new Set([
+  ".babelrc", ".browserslistrc", ".dockerignore", ".editorconfig",
+  ".env", ".env.development", ".env.example", ".env.local", ".env.production", ".env.test",
+  ".eslintignore", ".eslintrc", ".gitattributes", ".gitignore", ".gitmodules",
+  ".htaccess", ".mailmap", ".npmrc", ".nvmrc", ".prettierignore", ".prettierrc",
+  ".python-version", ".ruby-version", ".stylelintrc", ".tool-versions",
+  ".watchmanconfig", ".yarnrc",
+]);
 
 export function isMarkdown(ext: string): boolean {
   return ext === ".md" || ext === ".markdown";
@@ -26,4 +38,8 @@ export function isMarkdown(ext: string): boolean {
 
 export function isText(ext: string): boolean {
   return isMarkdown(ext) || TEXT_EXTS.has(ext) || CODE_EXTS.has(ext);
+}
+
+export function isTextName(name: string): boolean {
+  return TEXT_NAMES.has(name);
 }

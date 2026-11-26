@@ -81,7 +81,8 @@ the edge with its own scroll. The folders leading to the current page start
 expanded and the current entry is highlighted; everything else starts collapsed
 and loads its children on first open from `GET /folder/?tree`. Each folder is
 read one level at a time, capped at 300 entries with a "… N more" link to the
-full listing, so even a checkout with `node_modules` stays quick. Rows indent
+folder's listing, which has its own "Show all" link, so even a checkout with
+`node_modules` stays quick. Rows indent
 12px per level (capped at six) with a guide line for each ancestor. Without
 JavaScript the folder names are ordinary links to their listings. Below 800px
 the sidebar becomes a drawer behind a menu button in the header, with a
@@ -125,7 +126,7 @@ viewer.
 | PNG, JPEG, GIF, WebP, SVG, AVIF, ICO, BMP | centred image on a transparency checkerboard, with dimensions and file size; click for raw; Previous/Next or ←/→ steps through the folder's images |
 | `.json`, `.map`, `.geojson`, `.webmanifest` | pretty-printed with line numbers; invalid JSON falls back to the raw text |
 | PDF | embedded in an iframe |
-| video, audio | native browser player |
+| video, audio | native browser player; byte-range responses let it seek |
 | HTML | embedded in an iframe at its own URL, so relative assets still resolve |
 | anything else | a card with the name, type, size and a download link |
 

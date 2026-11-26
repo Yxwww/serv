@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "./cli";
-import { GRID_LIMIT, listEntries, renderListing, renderMarkdownHtml, renderMarkdownPage } from "./render";
+import { ENTRY_LIMIT, listEntries, renderListing, renderMarkdownHtml, renderMarkdownPage } from "./render";
 import { resolveInput, resolveRequest, respond, SOURCE_LIMIT } from "./serve";
 import { MAX_TREE_ENTRIES, renderSidebar, renderTreeFragment } from "./tree";
 
@@ -170,19 +170,19 @@ describe("directory listing", () => {
 
   test("both views cap at 300 and Show all lifts both", async () => {
     const dir = fixtureDir("grid-cap");
-    const total = GRID_LIMIT + 5;
+    const total = ENTRY_LIMIT + 5;
     for (let i = 0; i < total; i++) writeFileSync(join(dir, `f${String(i).padStart(3, "0")}.txt`), "x");
 
     const capped = await (await respond(dir, "http://localhost/?view=grid")).text();
-    expect(capped.match(/class="grid-card"/g)?.length).toBe(GRID_LIMIT);
-    expect(capped.match(/<td class="name">/g)?.length).toBe(GRID_LIMIT);
+    expect(capped.match(/class="grid-card"/g)?.length).toBe(ENTRY_LIMIT);
+    expect(capped.match(/<td class="name">/g)?.length).toBe(ENTRY_LIMIT);
     expect(capped).toContain('href="?view=grid&amp;showall=1"');
     expect(capped).toContain('href="?view=list&amp;showall=1"');
     expect(capped).toContain(`Show all ${total}`);
 
     const cappedList = await (await respond(dir, "http://localhost/?view=list")).text();
-    expect(cappedList.match(/class="grid-card"/g)?.length).toBe(GRID_LIMIT);
-    expect(cappedList.match(/<td class="name">/g)?.length).toBe(GRID_LIMIT);
+    expect(cappedList.match(/class="grid-card"/g)?.length).toBe(ENTRY_LIMIT);
+    expect(cappedList.match(/<td class="name">/g)?.length).toBe(ENTRY_LIMIT);
     expect(cappedList).toContain('href="?view=list&amp;showall=1"');
 
     const all = await (await respond(dir, "http://localhost/?view=grid&showall=1")).text();
@@ -197,14 +197,14 @@ describe("directory listing", () => {
 
   test("showall is on only for 1, true or a bare parameter", async () => {
     const dir = fixtureDir("showall");
-    const total = GRID_LIMIT + 1;
+    const total = ENTRY_LIMIT + 1;
     for (let i = 0; i < total; i++) writeFileSync(join(dir, `f${String(i).padStart(3, "0")}.txt`), "x");
     const toggleHrefs = (html: string) =>
       [...html.matchAll(/<a class="view-option[^"]*" data-view-link="[^"]*" href="([^"]*)"/g)].map((m) => m[1]);
 
     for (const query of ["showall=0", "showall=false", "showall="]) {
       const html = await (await respond(dir, `http://localhost/?view=grid&${query}`)).text();
-      expect(html.match(/class="grid-card"/g)?.length).toBe(GRID_LIMIT);
+      expect(html.match(/class="grid-card"/g)?.length).toBe(ENTRY_LIMIT);
       expect(html).toContain("Show all");
       expect(toggleHrefs(html)).toEqual(["?view=list", "?view=grid"]);
     }
@@ -393,6 +393,31 @@ describe("source view", () => {
     const png = await respond(dir, "http://localhost/pixel.png");
     expect(png.headers.get("content-type")).toBe("image/png");
   });
+
+  test("xml, lock and named dotfiles render source; extensionless text still does", async () => {
+    const dir = fixtureDir("text-types");
+    writeFileSync(join(dir, "feed.xml"), "<root>xml-marker</root>");
+    writeFileSync(join(dir, "bun.lock"), "lock-marker\n");
+    writeFileSync(join(dir, "LICENSE"), "MIT-marker\n");
+    writeFileSync(join(dir, ".env.example"), "ENV_MARKER=1\n");
+    writeFileSync(join(dir, ".gitignore"), "gitignore-marker\n");
+    writeFileSync(join(dir, "table.csv"), "csv-marker,1\n");
+
+    for (const [path, marker] of [
+      ["feed.xml", "xml-marker"],
+      ["bun.lock", "lock-marker"],
+      ["LICENSE", "MIT-marker"],
+      [".env.example", "ENV_MARKER=1"],
+      [".gitignore", "gitignore-marker"],
+      ["table.csv", "csv-marker"],
+    ] as const) {
+      const res = await respond(dir, `http://localhost/${path}`);
+      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      const html = await res.text();
+      expect(html).toContain('<div class="source">');
+      expect(html).toContain(marker);
+    }
+  });
 });
 
 describe("file viewers and request destination", () => {
@@ -496,6 +521,67 @@ describe("file viewers and request destination", () => {
     const missing = await respond(dir, "http://localhost/nope.md", undefined, "HEAD");
     expect(missing.status).toBe(404);
     expect(await missing.text()).toBe("");
+  });
+
+  test("raw files honour one byte range, suffix and open-ended forms", async () => {
+    const dir = fixtureDir("ranges");
+    const bytes = "0123456789";
+    writeFileSync(join(dir, "data.bin"), bytes);
+    const get = (range: string, url = "http://localhost/data.bin") =>
+      respond(dir, url, { range });
+
+    for (const [range, body, contentRange] of [
+      ["bytes=0-2", "012", "bytes 0-2/10"],
+      ["bytes=4-6", "456", "bytes 4-6/10"],
+      ["bytes=7-9", "789", "bytes 7-9/10"],
+      ["bytes=-3", "789", "bytes 7-9/10"],
+      ["bytes=5-", "56789", "bytes 5-9/10"],
+    ] as const) {
+      const res = await get(range);
+      expect(res.status).toBe(206);
+      expect(res.headers.get("accept-ranges")).toBe("bytes");
+      expect(res.headers.get("content-range")).toBe(contentRange);
+      expect(res.headers.get("content-length")).toBe(String(body.length));
+      expect(await res.text()).toBe(body);
+    }
+
+    const video = await respond(dir, "http://localhost/data.bin", {
+      "sec-fetch-dest": "video",
+      range: "bytes=0-1",
+    });
+    expect(video.status).toBe(206);
+    expect(await video.text()).toBe("01");
+
+    const out = await get("bytes=99-100");
+    expect(out.status).toBe(416);
+    expect(out.headers.get("accept-ranges")).toBe("bytes");
+    expect(out.headers.get("content-range")).toBe("bytes */10");
+    expect(out.headers.get("content-length")).toBe("0");
+    expect(await out.text()).toBe("");
+
+    for (const bad of ["bytes=0-1,3-4", "bytes=abc", "bytes=5-4"]) {
+      const res = await get(bad);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("accept-ranges")).toBe("bytes");
+      expect(res.headers.get("content-length")).toBe("10");
+      expect(await res.text()).toBe(bytes);
+    }
+
+    const getHead = await get("bytes=4-6");
+    const head = await respond(dir, "http://localhost/data.bin", { range: "bytes=4-6" }, "HEAD");
+    expect(head.status).toBe(206);
+    expect(head.headers.get("accept-ranges")).toBe("bytes");
+    expect(head.headers.get("content-range")).toBe(getHead.headers.get("content-range"));
+    expect(head.headers.get("content-length")).toBe(getHead.headers.get("content-length"));
+    expect(await head.text()).toBe("");
+
+    const raw = await respond(dir, "http://localhost/data.bin?raw", {
+      ...documentNav,
+      range: "bytes=-2",
+    });
+    expect(raw.status).toBe(206);
+    expect(raw.headers.get("content-range")).toBe("bytes 8-9/10");
+    expect(await raw.text()).toBe("89");
   });
 
   test("image viewer steps through images in listing order", async () => {

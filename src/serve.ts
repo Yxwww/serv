@@ -9,6 +9,7 @@ import {
   VIDEO_EXTS,
   isMarkdown,
   isText,
+  isTextName,
 } from "./types";
 import {
   listEntries,
@@ -122,7 +123,7 @@ function fileHref(rel: string): string {
 function looksText(path: string): boolean {
   const fd = openSync(path, "r");
   try {
-    const buf = Buffer.alloc(4096);
+    const buf = Buffer.alloc(8192);
     const n = readSync(fd, buf, 0, buf.length, 0);
     for (let i = 0; i < n; i++) if (buf[i] === 0) return false;
     return true;
@@ -141,14 +142,14 @@ function rawTypeFor(path: string): string {
   if (isMarkdown(ext)) return "text/markdown; charset=utf-8";
   if (ext === ".css") return "text/css; charset=utf-8";
   if (JS_EXTS.has(ext)) return "text/javascript; charset=utf-8";
-  if (isText(ext)) return "text/plain; charset=utf-8";
+  if (isText(ext) || isTextName(basename(path))) return "text/plain; charset=utf-8";
   if (!ext) return looksText(path) ? "text/plain; charset=utf-8" : "application/octet-stream";
   return Bun.file(path).type || "application/octet-stream";
 }
 
 function isTextFile(path: string): boolean {
   const ext = extname(path).toLowerCase();
-  return isText(ext) || (ext === "" && looksText(path));
+  return isText(ext) || isTextName(basename(path)) || (ext === "" && looksText(path));
 }
 
 /** Opening here turns an unreadable file into a response we can dress up. */
@@ -161,10 +162,73 @@ function assertReadable(path: string): number {
   }
 }
 
-function fileResponse(path: string, type = rawTypeFor(path), headers: Record<string, string> = {}): Response {
+type ByteRange =
+  | { kind: "full" }
+  | { kind: "partial"; start: number; end: number }
+  | { kind: "unsatisfiable" };
+
+/** One range only; a malformed or multi-range header falls back to the full file. */
+function parseByteRange(value: string | undefined, size: number): ByteRange {
+  if (!value) return { kind: "full" };
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(value.trim());
+  if (!match) return { kind: "full" };
+  const startText = match[1]!;
+  const endText = match[2]!;
+  if (startText === "" && endText === "") return { kind: "full" };
+
+  if (startText === "") {
+    const suffix = Number(endText);
+    if (suffix <= 0 || size === 0) return { kind: "unsatisfiable" };
+    return { kind: "partial", start: Math.max(0, size - suffix), end: size - 1 };
+  }
+
+  const start = Number(startText);
+  if (start >= size) return { kind: "unsatisfiable" };
+  if (endText === "") return { kind: "partial", start, end: size - 1 };
+  const end = Number(endText);
+  if (end < start) return { kind: "full" };
+  return { kind: "partial", start, end: Math.min(end, size - 1) };
+}
+
+function fileResponse(
+  path: string,
+  type = rawTypeFor(path),
+  headers: Record<string, string> = {},
+  range?: string,
+): Response {
   const size = assertReadable(path);
+  const parsed = parseByteRange(range, size);
+  if (parsed.kind === "unsatisfiable") {
+    return new Response(null, {
+      status: 416,
+      headers: {
+        "content-type": type,
+        "content-length": "0",
+        "accept-ranges": "bytes",
+        "content-range": `bytes */${size}`,
+        ...headers,
+      },
+    });
+  }
+  if (parsed.kind === "partial") {
+    return new Response(Bun.file(path).slice(parsed.start, parsed.end + 1), {
+      status: 206,
+      headers: {
+        "content-type": type,
+        "content-length": String(parsed.end - parsed.start + 1),
+        "accept-ranges": "bytes",
+        "content-range": `bytes ${parsed.start}-${parsed.end}/${size}`,
+        ...headers,
+      },
+    });
+  }
   return new Response(Bun.file(path), {
-    headers: { "content-type": type, "content-length": String(size), ...headers },
+    headers: {
+      "content-type": type,
+      "content-length": String(size),
+      "accept-ranges": "bytes",
+      ...headers,
+    },
   });
 }
 
@@ -250,6 +314,9 @@ async function route(
   const target = resolveRequest(root, url.pathname);
   const rootLabel = basename(root) || root;
   const raw = url.searchParams.has("raw");
+  const range = headerValue(headers, "range");
+  const serveFile = (path: string, type?: string, extra: Record<string, string> = {}) =>
+    fileResponse(path, type, extra, range);
 
   if (target.kind === "outside") return textResponse("Forbidden\n", 403);
   if (target.kind === "missing") {
@@ -277,7 +344,7 @@ async function route(
       if (url.searchParams.has("tree")) return htmlResponse(renderTreeFragment(target.path, target.rel));
 
       const index = join(target.path, "index.html");
-      if (isFile(index)) return fileResponse(index);
+      if (isFile(index)) return serveFile(index);
 
       const readme = join(target.path, "README.md");
       const readmeFile = isFile(readme);
@@ -300,11 +367,11 @@ async function route(
 
     // A subresource request gets the file's own bytes, whatever the type.
     if (!raw && dest !== undefined && dest !== "document") {
-      return fileResponse(target.path, rawTypeFor(target.path), VARY_DEST);
+      return serveFile(target.path, rawTypeFor(target.path), VARY_DEST);
     }
 
     if (isMarkdown(ext)) {
-      if (raw) return fileResponse(target.path, "text/plain; charset=utf-8");
+      if (raw) return serveFile(target.path, "text/plain; charset=utf-8");
       const { text, truncated } = await readText(target.path);
       return htmlResponse(
         renderMarkdownPage({
@@ -320,7 +387,7 @@ async function route(
     }
 
     if (isTextFile(target.path)) {
-      if (raw) return fileResponse(target.path, "text/plain; charset=utf-8");
+      if (raw) return serveFile(target.path, "text/plain; charset=utf-8");
       const { text, truncated } = await readText(target.path);
       return htmlResponse(
         renderSourcePage({
@@ -335,8 +402,8 @@ async function route(
       );
     }
 
-    if (raw) return fileResponse(target.path, rawTypeFor(target.path), VARY_DEST);
-    if (dest !== "document") return fileResponse(target.path, rawTypeFor(target.path), VARY_DEST);
+    if (raw) return serveFile(target.path, rawTypeFor(target.path), VARY_DEST);
+    if (dest !== "document") return serveFile(target.path, rawTypeFor(target.path), VARY_DEST);
 
     // A viewer for a file nobody can read is worse than an error page.
     assertReadable(target.path);
