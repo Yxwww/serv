@@ -21,7 +21,7 @@ const USAGE = `usage: serv [path] [--port N] [--no-open] [--base DIR]
   --base    resolve a relative path against this directory
 `;
 
-export type Args = { path: string; base: string; port: number; open: boolean };
+type Args = { path: string; base: string; port: number; open: boolean };
 
 export function parseArgs(argv: string[], cwd = process.cwd()): Args {
   const args: Args = { path: ".", base: cwd, port: DEFAULT_PORT, open: true };
@@ -66,7 +66,7 @@ function parsePort(value: string): number {
 function listen(root: string, startPort: number) {
   for (let port = startPort; port < startPort + PORT_TRIES && port <= 65535; port++) {
     try {
-      return Bun.serve({ hostname: "127.0.0.1", port, fetch: (req) => respond(root, req.url) });
+      return Bun.serve({ hostname: "127.0.0.1", port, fetch: (req) => respond(root, req.url, req.headers, req.method) });
     } catch (e) {
       const text = `${(e as { code?: string }).code ?? ""} ${String(e)}`;
       if (!text.includes("EADDRINUSE")) throw e;
@@ -90,7 +90,7 @@ function openBrowser(url: string): void {
   }
 }
 
-export const main = async (argv: string[]): Promise<number> => {
+const main = async (argv: string[]): Promise<number> => {
   let args: Args;
   try {
     args = parseArgs(argv);
