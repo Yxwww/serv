@@ -442,6 +442,8 @@ async function route(
     if (isMarkdown(ext)) {
       if (raw) return serveFile(target.path, "text/plain; charset=utf-8");
       const { text, truncated } = await readText(target.path);
+      const requested = url.searchParams.get("view");
+      const view = requested === "source" || requested === "rendered" ? requested : undefined;
       return htmlResponse(
         renderMarkdownPage({
           markdown: text,
@@ -449,6 +451,7 @@ async function route(
           rel: target.rel,
           sidebar: await sidebarFor(root, target.rel, false),
           truncated: truncated ? SOURCE_LIMIT : undefined,
+          view,
         }),
         200,
         VARY_DEST,

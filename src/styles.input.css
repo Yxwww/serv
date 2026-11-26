@@ -640,6 +640,13 @@ body.nav-open .nav-backdrop {
   display: none;
 }
 
+/* Markdown Preview/Source: the server sets this class from ?view and the
+   pre-paint script replaces it from the saved choice. */
+html.serv-md-rendered [data-md-panel="source"],
+html.serv-md-source [data-md-panel="rendered"] {
+  display: none;
+}
+
 .view-toggle {
   display: inline-flex;
   flex: none;

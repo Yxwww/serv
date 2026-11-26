@@ -10,13 +10,15 @@ import searchScript from "./search.bundle.js" with { type: "text" };
 /** One default each; the client toggles these and the head script restores them. */
 export const SHOW_HIDDEN_DEFAULT = false;
 export const SHOW_IGNORED_DEFAULT = false;
+/** Saved Markdown panel choice; explicit ?view= wins and is saved too. */
+export const MD_VIEW_KEY = "serv-md-view";
 const DEFAULT_CLASSES = [
   SHOW_HIDDEN_DEFAULT && SHOW_HIDDEN_CLASS,
   SHOW_IGNORED_DEFAULT && SHOW_IGNORED_CLASS,
 ].filter(Boolean).join(" ");
 
 // Runs in <head>, so rows are already hidden or shown on the first paint.
-export const PRE_PAINT = `(function(){var e=document.documentElement;e.classList.add("serv-js");try{var h=localStorage.getItem("${SHOW_HIDDEN_CLASS}");var i=localStorage.getItem("${SHOW_IGNORED_CLASS}");if(h!==null)e.classList.toggle("${SHOW_HIDDEN_CLASS}",h==="1");if(i!==null)e.classList.toggle("${SHOW_IGNORED_CLASS}",i==="1")}catch(_){}})()`;
+export const PRE_PAINT = `(function(){var e=document.documentElement;e.classList.add("serv-js");try{var h=localStorage.getItem("${SHOW_HIDDEN_CLASS}");var i=localStorage.getItem("${SHOW_IGNORED_CLASS}");if(h!==null)e.classList.toggle("${SHOW_HIDDEN_CLASS}",h==="1");if(i!==null)e.classList.toggle("${SHOW_IGNORED_CLASS}",i==="1")}catch(_){}try{if(e.classList.contains("serv-md-page")){var p=new URLSearchParams(location.search).get("view");var v=p==="source"||p==="rendered"?p:null;if(!v){var s=localStorage.getItem("${MD_VIEW_KEY}");if(s==="source"||s==="rendered")v=s}if(v){e.classList.toggle("serv-md-source",v==="source");e.classList.toggle("serv-md-rendered",v==="rendered")}}}catch(_){}})()`;
 
 // Inline so a page never asks the server for an icon. The style element keeps
 // the square readable in dark mode when the browser paints a dark tab strip.
@@ -168,6 +170,62 @@ const LISTING_SCRIPT = `
 })();
 `;
 
+/**
+ * Both Markdown panels are in the page, so switching flips them and records
+ * the choice instead of reloading. The links still carry ?view= for the no-JS
+ * path, which the server and the pre-paint script both understand.
+ */
+const MD_SCRIPT = `
+(function () {
+  var root = document.querySelector("[data-md-view]");
+  if (!root) return;
+  var html = document.documentElement;
+  var links = document.querySelectorAll("[data-md-link]");
+  var params = null;
+  try { params = new URLSearchParams(location.search); } catch (error) {}
+  var param = params ? params.get("view") : null;
+  var explicit = param === "source" || param === "rendered" ? param : null;
+  var stored = null;
+  try { stored = localStorage.getItem("${MD_VIEW_KEY}"); } catch (error) {}
+  var view = explicit || (stored === "source" || stored === "rendered"
+    ? stored
+    : html.classList.contains("serv-md-source") ? "source" : "rendered");
+  if (explicit) {
+    try { localStorage.setItem("${MD_VIEW_KEY}", explicit); } catch (error) {}
+  }
+
+  function show(next, rememberUrl) {
+    html.classList.toggle("serv-md-source", next === "source");
+    html.classList.toggle("serv-md-rendered", next === "rendered");
+    for (var i = 0; i < links.length; i++) {
+      var active = links[i].getAttribute("data-md-link") === next;
+      links[i].classList.toggle("is-active", active);
+      if (active) links[i].setAttribute("aria-current", "true");
+      else links[i].removeAttribute("aria-current");
+    }
+    if (rememberUrl && params) {
+      var nextParams = new URLSearchParams(params);
+      nextParams.set("view", next);
+      try {
+        history.replaceState(null, "", location.pathname + "?" + nextParams.toString() + location.hash);
+      } catch (error) {}
+    }
+  }
+
+  show(view, explicit !== null);
+  for (var j = 0; j < links.length; j++) {
+    (function (link) {
+      link.addEventListener("click", function (event) {
+        event.preventDefault();
+        var next = link.getAttribute("data-md-link");
+        try { localStorage.setItem("${MD_VIEW_KEY}", next); } catch (error) {}
+        show(next, true);
+      });
+    })(links[j]);
+  }
+})();
+`;
+
 const PALETTE = `<div class="palette" id="serv-palette" hidden>
 <div class="palette-backdrop" data-palette-close></div>
 <div class="palette-panel" role="dialog" aria-modal="true" aria-label="Search files">
@@ -260,6 +318,8 @@ function pageShell(opts: {
   rawBlank?: boolean;
   sidebar?: string;
   bodyScript?: string;
+  headerTools?: string;
+  htmlClass?: string;
 }): string {
   let trail = "";
   opts.crumbs.forEach((c, i) => {
@@ -282,8 +342,10 @@ function pageShell(opts: {
   const script = opts.sidebar ? `<script>${SCRIPT}</script>` : "";
   const bodyScript = opts.bodyScript ? `<script>${opts.bodyScript}</script>` : "";
   const fullPath = "/" + opts.crumbs.slice(1).map((c) => c.label).join("/");
+  const classes = [DEFAULT_CLASSES, opts.htmlClass].filter(Boolean).join(" ");
+  const headerTools = opts.headerTools ?? "";
   return `<!doctype html>
-<html lang="en"${DEFAULT_CLASSES ? ` class="${DEFAULT_CLASSES}"` : ""}>
+<html lang="en"${classes ? ` class="${classes}"` : ""}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -304,6 +366,7 @@ ${sidebar}
 <header class="sticky top-0 z-20 flex h-[var(--header-h)] shrink-0 items-center gap-2 border-b border-border bg-body/85 px-6 backdrop-blur md:px-10 xl:px-12">
 ${menu}
 <nav class="crumbbar flex-1" title="${escapeHtml(fullPath)}">${trail}</nav>
+${headerTools}
 ${raw}
 </header>
 <main class="w-full px-6 py-8 md:px-10 md:py-10 xl:px-12">${opts.body}</main>
@@ -320,20 +383,53 @@ function rawHrefFor(rel: string): string {
   return "/" + rel.split("/").filter(Boolean).map(encodeURIComponent).join("/") + "?raw";
 }
 
+type MarkdownView = "rendered" | "source";
+
+function mdViewHref(view: MarkdownView): string {
+  return `?view=${view}`;
+}
+
+function mdToggle(active: MarkdownView): string {
+  const option = (view: MarkdownView, label: string) => {
+    const on = view === active;
+    return `<a class="view-option${on ? " is-active" : ""}" data-md-link="${view}" href="${mdViewHref(view)}"${on ? ' aria-current="true"' : ""}>${label}</a>`;
+  };
+  return `<div class="view-toggle md-toggle" role="group" aria-label="Markdown view" title="Shift+S toggles preview and source">${option("rendered", "Preview")}${option("source", "Source")}</div>`;
+}
+
+/** The line-numbered `<pre>` block shared by source pages and Markdown source. */
+function sourceBody(text: string): string {
+  const code = text.endsWith("\n") ? text.slice(0, -1) : text;
+  const lineCount = code === "" ? 1 : code.split("\n").length;
+  let gutter = "1";
+  for (let n = 2; n <= lineCount; n++) gutter += "\n" + n;
+  return `<div class="source"><pre class="gutter" aria-hidden="true">${gutter}</pre><pre class="code"><code>${escapeHtml(code)}</code></pre></div>`;
+}
+
 export function renderMarkdownPage(opts: {
   markdown: string;
   rootLabel: string;
   rel: string;
   sidebar?: string;
   truncated?: number; // shown bytes; omitted when the whole file fits
+  view?: MarkdownView;
 }): string {
   const rawHref = rawHrefFor(opts.rel);
+  const view: MarkdownView = opts.view ?? "rendered";
+  const notice = opts.truncated ? truncationNotice(opts.truncated, rawHref) : "";
+  const body = `${notice}<div class="md-view" data-md-view>
+<div class="md-panel" data-md-panel="rendered"><article class="markdown prose max-w-none">${renderMarkdownHtml(opts.markdown)}</article></div>
+<div class="md-panel" data-md-panel="source">${sourceBody(opts.markdown)}</div>
+</div>`;
   return pageShell({
     title: basename(opts.rel),
     crumbs: buildCrumbs(opts.rootLabel, opts.rel),
-    body: `${opts.truncated ? truncationNotice(opts.truncated, rawHref) : ""}<article class="markdown prose max-w-none">${renderMarkdownHtml(opts.markdown)}</article>`,
+    body,
     rawHref,
     sidebar: opts.sidebar,
+    headerTools: mdToggle(view),
+    htmlClass: `serv-md-page serv-md-${view}`,
+    bodyScript: MD_SCRIPT,
   });
 }
 
@@ -350,16 +446,12 @@ export function renderSourcePage(opts: {
   truncated?: number; // shown bytes; omitted when the whole file fits
   rawBlank?: boolean;
 }): string {
-  const code = opts.text.endsWith("\n") ? opts.text.slice(0, -1) : opts.text;
-  const lineCount = code === "" ? 1 : code.split("\n").length;
-  let gutter = "1";
-  for (let n = 2; n <= lineCount; n++) gutter += "\n" + n;
   const rawHref = rawHrefFor(opts.rel);
   const notice = opts.truncated ? truncationNotice(opts.truncated, rawHref) : "";
   return pageShell({
     title: basename(opts.rel),
     crumbs: buildCrumbs(opts.rootLabel, opts.rel),
-    body: `${notice}<div class="source"><pre class="gutter" aria-hidden="true">${gutter}</pre><pre class="code"><code>${escapeHtml(code)}</code></pre></div>`,
+    body: `${notice}${sourceBody(opts.text)}`,
     rawHref,
     rawBlank: opts.rawBlank,
     sidebar: opts.sidebar,

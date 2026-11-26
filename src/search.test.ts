@@ -29,6 +29,7 @@ type FakeElement = {
   addEventListener(type: string, fn: (event: any) => void): void;
   focus(): void;
   blur(): void;
+  click(): void;
   scrollIntoView(): void;
   querySelectorAll(selector: string): FakeElement[];
 };
@@ -107,6 +108,9 @@ function element(tagName = "div"): FakeElement {
     },
     focus() {},
     blur() {},
+    click() {
+      node.attrs.set("clicked", String(Number(node.attrs.get("clicked") ?? 0) + 1));
+    },
     scrollIntoView() {},
     querySelectorAll(selector: string) {
       const wanted = selector.startsWith(".") ? selector.slice(1) : "";
@@ -133,7 +137,7 @@ function findById(root: FakeElement, id: string): FakeElement | undefined {
   return undefined;
 }
 
-function fakeDocument(rows: FakeElement[] = []) {
+function fakeDocument(rows: FakeElement[] = [], opts: { md?: "source" | "rendered" } = {}) {
   const html = element("html");
   const body = element("body");
   const palette = element("div");
@@ -142,6 +146,14 @@ function fakeDocument(rows: FakeElement[] = []) {
   const list = element("ul");
   const status = element("div");
   const button = element("button");
+  const mdRoot = opts.md ? element("div") : null;
+  const mdLinks = {
+    rendered: element("a"),
+    source: element("a"),
+  };
+  mdLinks.rendered.attrs.set("data-md-link", "rendered");
+  mdLinks.source.attrs.set("data-md-link", "source");
+  if (opts.md) html.className = `serv-md-page serv-md-${opts.md}`;
   const byId = new Map<string, FakeElement>([
     ["serv-palette", palette],
     ["serv-search-input", input],
@@ -154,7 +166,12 @@ function fakeDocument(rows: FakeElement[] = []) {
     body,
     activeElement: null,
     getElementById: (id: string) => byId.get(id) ?? findById(list, id) ?? null,
-    querySelector: (selector: string) => (selector === "[data-serv-hidden-count]" ? button : null),
+    querySelector: (selector: string) => {
+      if (selector === "[data-serv-hidden-count]") return button;
+      if (selector === "[data-md-view]") return mdRoot;
+      const link = /^\[data-md-link="(source|rendered)"\]$/.exec(selector);
+      return link ? mdLinks[link[1] as "source" | "rendered"] : null;
+    },
     querySelectorAll: (selector: string) => (selector === ".listing tbody tr" ? rows : []),
     createElement: (tag: string) => element(tag),
     createDocumentFragment: () => element("#fragment"),
@@ -171,6 +188,7 @@ function fakeDocument(rows: FakeElement[] = []) {
     list,
     status,
     button,
+    mdLinks,
     keydown: (event: KeyboardEvent) => listeners.get("keydown")?.(event),
   };
 }
@@ -397,6 +415,40 @@ describe("keymap wiring", () => {
     }
   });
 
+  test("Shift+S flips Preview/Source only on Markdown pages and is skipped in fields", () => {
+    const storage = stubStorage();
+    try {
+      const md = fakeDocument([], { md: "rendered" });
+      initSearch(md.doc);
+
+      const first = press({ key: "S", shiftKey: true });
+      md.keydown(first.event);
+      expect(first.prevented()).toBe(1);
+      expect(md.mdLinks.source.getAttribute("clicked")).toBe("1");
+      expect(md.mdLinks.rendered.getAttribute("clicked")).toBe(null);
+
+      // From the source panel the key targets Preview.
+      md.html.classList.add("serv-md-source");
+      md.html.classList.remove("serv-md-rendered");
+      md.keydown(press({ key: "S", shiftKey: true }).event);
+      expect(md.mdLinks.rendered.getAttribute("clicked")).toBe("1");
+
+      // Editable fields keep the key for typing.
+      const inField = press({ key: "S", shiftKey: true, target: { tagName: "INPUT" } });
+      md.keydown(inField.event);
+      expect(inField.prevented()).toBe(0);
+      expect(md.mdLinks.source.getAttribute("clicked")).toBe("1");
+
+      const plain = fakeDocument();
+      initSearch(plain.doc);
+      const elsewhere = press({ key: "S", shiftKey: true });
+      plain.keydown(elsewhere.event);
+      expect(elsewhere.prevented()).toBe(0);
+    } finally {
+      storage.restore();
+    }
+  });
+
   test("the live indicator counts each row once and follows the toggle", () => {
     const storage = stubStorage();
     const rows = [
@@ -461,5 +513,43 @@ describe("pre-paint", () => {
     const unset = run({});
     expect(unset.classList.contains("serv-show-hidden")).toBe(false);
     expect(unset.classList.contains("serv-show-ignored")).toBe(false);
+  });
+
+  test("restores the saved Markdown panel before paint; an explicit ?view= wins", () => {
+    const run = (stored: Record<string, string>, search: string, initial: string) => {
+      const html = element("html");
+      html.className = initial;
+      const storage = { getItem: (key: string) => stored[key] ?? null };
+      new Function("document", "localStorage", "location", PRE_PAINT)(
+        { documentElement: html },
+        storage,
+        { search },
+      );
+      return html;
+    };
+
+    const savedSource = run({ "serv-md-view": "source" }, "", "serv-md-page serv-md-rendered");
+    expect(savedSource.classList.contains("serv-md-source")).toBe(true);
+    expect(savedSource.classList.contains("serv-md-rendered")).toBe(false);
+
+    const savedRendered = run({ "serv-md-view": "rendered" }, "", "serv-md-page serv-md-source");
+    expect(savedRendered.classList.contains("serv-md-rendered")).toBe(true);
+    expect(savedRendered.classList.contains("serv-md-source")).toBe(false);
+
+    const explicitSource = run({ "serv-md-view": "rendered" }, "?view=source", "serv-md-page serv-md-rendered");
+    expect(explicitSource.classList.contains("serv-md-source")).toBe(true);
+    expect(explicitSource.classList.contains("serv-md-rendered")).toBe(false);
+
+    const explicitRendered = run({ "serv-md-view": "source" }, "?view=rendered", "serv-md-page serv-md-source");
+    expect(explicitRendered.classList.contains("serv-md-rendered")).toBe(true);
+    expect(explicitRendered.classList.contains("serv-md-source")).toBe(false);
+
+    // Nothing saved keeps the server's default; other pages are not touched.
+    const fresh = run({}, "", "serv-md-page serv-md-rendered");
+    expect(fresh.classList.contains("serv-md-rendered")).toBe(true);
+    expect(fresh.classList.contains("serv-md-source")).toBe(false);
+    const other = run({ "serv-md-view": "source" }, "", "");
+    expect(other.classList.contains("serv-md-source")).toBe(false);
+    expect(other.classList.contains("serv-js")).toBe(true);
   });
 });
