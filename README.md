@@ -132,11 +132,11 @@ outside closes and returns focus to the page. The list comes from
 `GET /folder/?files`, which uses `rg --files` when ripgrep is installed (so
 the served tree's own `.gitignore` applies, while ignore rules from parent
 directories and the machine's global ignore file do not) and otherwise walks
-the tree skipping `.git` and symlinks. It returns paths tagged hidden or
-ignored, stops at 50,000 entries, fills the cap with non-ignored paths first,
-and says when it truncated. The palette applies the same `Shift+H`/`Shift+I`
-choices as the listing; because both start hidden, it initially ranks only the
-visible paths.
+the tree skipping `.git` and symlinks. It returns paths in path order, tagged
+hidden or ignored, stops at 50,000 entries, fills the cap with non-ignored
+paths first, and says when it truncated. The palette applies the same
+`Shift+H`/`Shift+I` choices as the listing; because both start hidden, it
+initially ranks only the visible paths.
 
 ## Listing views
 

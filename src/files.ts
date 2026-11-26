@@ -250,7 +250,8 @@ export async function tagRows(root: string, rows: readonly Row[]): Promise<Map<s
 }
 
 async function collect(root: string, limit: number): Promise<FileList> {
-  const rg = Bun.which("rg");
+  // Resolve on each scan so a test can point PATH at a tree without ripgrep.
+  const rg = Bun.which("rg", { PATH: process.env.PATH });
   if (!rg) return fallback(root, limit);
 
   // Visible first: if it already fills the budget there is nothing to add.
@@ -280,7 +281,7 @@ export function isHiddenPath(path: string): boolean {
   return false;
 }
 
-/** Merge both passes into tagged entries, non-ignored paths first. Exported for tests. */
+/** Merge both passes into tagged entries in path order; the cap favors non-ignored paths. Exported for tests. */
 export function combineFiles(
   visibleFiles: string[],
   allFiles: string[],
@@ -314,16 +315,25 @@ export function combineFiles(
     entries.set(dir, entry);
   }
 
-  // Fill the cap with real (non-ignored) paths first.
-  const list = [...entries.values()];
-  list.sort((a, b) => {
-    if (!!a.ignored !== !!b.ignored) return a.ignored ? 1 : -1;
-    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
-  });
-  return {
-    entries: list.slice(0, limit),
-    truncated: visibleTruncated || allTruncated || list.length > limit,
-  };
+  // Display order is path order on every backend; only the cap favors real
+  // (non-ignored) paths, so one tree lists the same way with or without rg.
+  const byPath = (a: Entry, b: Entry): number =>
+    a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  const list = [...entries.values()].sort(byPath);
+  const truncated = visibleTruncated || allTruncated || list.length > limit;
+  if (list.length <= limit) return { entries: list, truncated };
+
+  const kept: Entry[] = [];
+  for (const entry of list) {
+    if (kept.length >= limit) break;
+    if (!entry.ignored) kept.push(entry);
+  }
+  for (const entry of list) {
+    if (kept.length >= limit) break;
+    if (entry.ignored) kept.push(entry);
+  }
+  kept.sort(byPath);
+  return { entries: kept, truncated };
 }
 
 /** Without ripgrep there is no ignore reader, so everything is visible. */

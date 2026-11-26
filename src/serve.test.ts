@@ -907,8 +907,25 @@ describe("cli arguments", () => {
 });
 
 describe("command palette", () => {
-  test("?files lists tagged paths relative to the folder, folders with a trailing slash", async () => {
-    const dir = fixtureDir("files");
+  const FILES_PATHS = [
+    ".gitignore",
+    ".hidden.md",
+    "README.md",
+    "node_modules/",
+    "node_modules/pkg/",
+    "node_modules/pkg/x.js",
+    "secret.txt",
+    "sub/",
+    "sub/a.md",
+    "sub/deep/",
+    "sub/deep/b.txt",
+    "sub/node_modules/",
+    "sub/node_modules/deep/",
+    "sub/node_modules/deep/y.js",
+  ];
+
+  function filesFixture(name: string): string {
+    const dir = fixtureDir(name);
     mkdirSync(join(dir, "sub", "deep"), { recursive: true });
     mkdirSync(join(dir, "sub", "node_modules", "deep"), { recursive: true });
     mkdirSync(join(dir, "node_modules", "pkg"), { recursive: true });
@@ -922,63 +939,103 @@ describe("command palette", () => {
     writeFileSync(join(dir, "node_modules", "pkg", "x.js"), "x");
     writeFileSync(join(dir, ".hidden.md"), "x");
     writeFileSync(join(dir, ".git", "config"), "x");
+    return dir;
+  }
 
-    const res = await respond(dir, "http://localhost/?files");
-    expect(res.headers.get("content-type")).toBe("application/json; charset=utf-8");
-    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
-    const body = (await res.json()) as {
-      entries: Array<{ path: string; hidden?: boolean; ignored?: boolean }>;
-    };
-    const byPath = new Map(body.entries.map((entry) => [entry.path, entry]));
+  async function withoutRg<T>(run: () => Promise<T>): Promise<T> {
+    const saved = process.env.PATH;
+    process.env.PATH = "/nonexistent";
+    try {
+      return await run();
+    } finally {
+      process.env.PATH = saved;
+    }
+  }
 
-    // Real paths sort first; ignored ones follow.
-    expect(body.entries.map((entry) => entry.path)).toEqual([
+  test.skipIf(!Bun.which("rg"))(
+    "?files lists tagged paths relative to the folder, folders with a trailing slash",
+    async () => {
+      const dir = filesFixture("files");
+
+      const res = await respond(dir, "http://localhost/?files");
+      expect(res.headers.get("content-type")).toBe("application/json; charset=utf-8");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      const body = (await res.json()) as {
+        entries: Array<{ path: string; hidden?: boolean; ignored?: boolean }>;
+      };
+      const byPath = new Map(body.entries.map((entry) => [entry.path, entry]));
+
+      // Path order on every backend, ignored entries included.
+      expect(body.entries.map((entry) => entry.path)).toEqual(FILES_PATHS);
+      expect(byPath.get(".gitignore")).toEqual({ path: ".gitignore", hidden: true });
+      expect(byPath.get(".hidden.md")).toEqual({ path: ".hidden.md", hidden: true });
+      expect(byPath.get("node_modules/")).toEqual({ path: "node_modules/", ignored: true });
+      expect(byPath.get("node_modules/pkg/x.js")).toEqual({ path: "node_modules/pkg/x.js", ignored: true });
+      expect(byPath.get("secret.txt")).toEqual({ path: "secret.txt", ignored: true });
+      expect(byPath.get("sub/node_modules/")).toEqual({ path: "sub/node_modules/", ignored: true });
+      expect(byPath.has(".git/")).toBe(false);
+      expect(byPath.has(".git/config")).toBe(false);
+
+      // Relative to the requested folder, not to the root.
+      const nested = (await (await respond(dir, "http://localhost/sub/?files")).json()) as {
+        entries: Array<{ path: string; ignored?: boolean }>;
+      };
+      expect(nested.entries.map((entry) => entry.path)).toEqual([
+        "a.md",
+        "deep/",
+        "deep/b.txt",
+        "node_modules/",
+        "node_modules/deep/",
+        "node_modules/deep/y.js",
+      ]);
+      expect(nested.entries.find((entry) => entry.path === "node_modules/")?.ignored).toBe(true);
+    },
+  );
+
+  test("?files without ripgrep keeps the path order and tags only dotfiles", async () => {
+    const dir = filesFixture("files-no-rg");
+    const body = await withoutRg(async () => {
+      const res = await respond(dir, "http://localhost/?files");
+      return (await res.json()) as {
+        entries: Array<{ path: string; hidden?: boolean; ignored?: boolean }>;
+      };
+    });
+
+    expect(body.entries.map((entry) => entry.path)).toEqual(FILES_PATHS);
+    expect(body.entries.filter((entry) => entry.ignored)).toEqual([]);
+    expect(body.entries.filter((entry) => entry.hidden).map((entry) => entry.path)).toEqual([
       ".gitignore",
       ".hidden.md",
-      "README.md",
-      "sub/",
-      "sub/a.md",
-      "sub/deep/",
-      "sub/deep/b.txt",
-      "node_modules/",
-      "node_modules/pkg/",
-      "node_modules/pkg/x.js",
-      "secret.txt",
-      "sub/node_modules/",
-      "sub/node_modules/deep/",
-      "sub/node_modules/deep/y.js",
     ]);
-    expect(byPath.get(".gitignore")).toEqual({ path: ".gitignore", hidden: true });
-    expect(byPath.get(".hidden.md")).toEqual({ path: ".hidden.md", hidden: true });
-    expect(byPath.get("node_modules/")).toEqual({ path: "node_modules/", ignored: true });
-    expect(byPath.get("node_modules/pkg/x.js")).toEqual({ path: "node_modules/pkg/x.js", ignored: true });
-    expect(byPath.get("secret.txt")).toEqual({ path: "secret.txt", ignored: true });
-    expect(byPath.get("sub/node_modules/")).toEqual({ path: "sub/node_modules/", ignored: true });
-    expect(byPath.has(".git/")).toBe(false);
-    expect(byPath.has(".git/config")).toBe(false);
-
-    // Relative to the requested folder, not to the root.
-    const nested = (await (await respond(dir, "http://localhost/sub/?files")).json()) as {
-      entries: Array<{ path: string; ignored?: boolean }>;
-    };
-    expect(nested.entries.map((entry) => entry.path)).toEqual([
-      "a.md",
-      "deep/",
-      "deep/b.txt",
-      "node_modules/",
-      "node_modules/deep/",
-      "node_modules/deep/y.js",
-    ]);
-    expect(nested.entries.find((entry) => entry.path === "node_modules/")?.ignored).toBe(true);
   });
 
-  test("combineFiles caps and orders real paths before ignored ones", () => {
-    const result = combineFiles(["a.txt"], ["a.txt", "dist/x.js"], false, false, 2);
-    expect(result.entries).toEqual([
+  test("combineFiles lists in path order and fills the cap with real paths first", () => {
+    const listed = combineFiles(
+      ["a.txt", "src/y.js"],
+      ["a.txt", "dist/x.js", "src/y.js"],
+      false,
+      false,
+      10,
+    );
+    expect(listed.entries).toEqual([
       { path: "a.txt" },
       { path: "dist/", ignored: true },
+      { path: "dist/x.js", ignored: true },
+      { path: "src/" },
+      { path: "src/y.js" },
     ]);
-    expect(result.truncated).toBe(true);
+    expect(listed.truncated).toBe(false);
+
+    // The cap is decided by tags, then the survivors are shown in path order.
+    const capped = combineFiles(["z.txt"], ["z.txt", "a/ignored.txt"], false, false, 2);
+    expect(capped.entries).toEqual([
+      { path: "a/", ignored: true },
+      { path: "z.txt" },
+    ]);
+    expect(capped.truncated).toBe(true);
+
+    const realOnly = combineFiles(["z.txt"], ["z.txt", "a/ignored.txt"], false, false, 1);
+    expect(realOnly.entries).toEqual([{ path: "z.txt" }]);
   });
 
   test("concurrent cold requests share one collection", async () => {
