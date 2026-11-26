@@ -203,10 +203,20 @@ type ImageNav = {
 
 /** Previous/next image in listing order, from one read of the containing folder. */
 function imageNeighbors(path: string, rel: string): ImageNav {
-  const names = readdirSync(dirname(path), { withFileTypes: true })
-    .filter((entry) => !entry.name.startsWith(".") && !entry.isDirectory())
+  const dir = dirname(path);
+  const names = readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => !entry.name.startsWith(".") && IMAGE_EXTS.has(extname(entry.name).toLowerCase()))
+    .filter((entry) => {
+      if (!entry.isSymbolicLink()) return !entry.isDirectory();
+      // A symlink's Dirent says link, not what it points at. Only image-named
+      // links pay for the stat, and a link to a folder is not a neighbour.
+      try {
+        return !statSync(join(dir, entry.name)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
     .map((entry) => entry.name)
-    .filter((name) => IMAGE_EXTS.has(extname(name).toLowerCase()))
     .sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   const index = names.indexOf(basename(path));
   if (index < 0) return {};
@@ -219,12 +229,24 @@ function imageNeighbors(path: string, rel: string): ImageNav {
   };
 }
 
+function showAllEnabled(url: URL): boolean {
+  const value = url.searchParams.get("showall");
+  if (value === "1" || value === "true") return true;
+  if (value !== "") return false;
+  // Only a parameter with no "=" at all is the bare form; ?showall= stays off.
+  const query = url.search.slice(1);
+  return query !== "" && query.split("&").includes("showall");
+}
+
 async function route(
   root: string,
   requestUrl: string,
   headers?: RequestHeaders,
 ): Promise<Response> {
   const url = new URL(requestUrl, "http://127.0.0.1");
+  if (url.pathname === "/favicon.ico" && !isFile(join(root, "favicon.ico"))) {
+    return new Response(null, { status: 204 });
+  }
   const target = resolveRequest(root, url.pathname);
   const rootLabel = basename(root) || root;
   const raw = url.searchParams.has("raw");
@@ -271,7 +293,7 @@ async function route(
           readmeTruncated: readmeText?.truncated ? SOURCE_LIMIT : undefined,
           sidebar: renderSidebar(root, target.rel),
           view,
-          showAll: url.searchParams.has("showall"),
+          showAll: showAllEnabled(url),
         }),
       );
     }

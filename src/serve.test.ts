@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "./cli";
@@ -95,9 +95,9 @@ describe("directory listing", () => {
     const withReadme = await (await respond(dir, "http://localhost/")).text();
     expect(withReadme).toContain('<table class="listing">');
     expect(withReadme).toContain('id="severity-notes"');
-    expect(withReadme).toContain('<div class="listing-split">');
+    expect(withReadme).toContain('<div class="listing-split"><div class="listing-panels">');
     expect(withReadme).toContain('<section class="readme-panel">');
-    expect(withReadme).toContain('<section class="files-panel">');
+    expect(withReadme).toContain('<section class="files-panel" data-listing-view');
     expect(withReadme.indexOf('class="readme-panel"')).toBeLessThan(withReadme.indexOf('class="files-panel"'));
     expect(withReadme).toContain('href="/README.md?raw"');
     expect(withReadme).toContain('Files <span class="panel-count">1</span>');
@@ -113,7 +113,7 @@ describe("directory listing", () => {
     const dir = fixtureDir("no-readme");
     writeFileSync(join(dir, "a.txt"), "a");
     const html = await (await respond(dir, "http://localhost/")).text();
-    expect(html).toContain('<section class="files-panel files-panel-full">');
+    expect(html).toContain('<section class="files-panel files-panel-full" data-listing-view');
     expect(html).not.toContain('class="listing-split"');
     expect(html).not.toContain('class="readme-panel"');
   });
@@ -131,6 +131,13 @@ describe("directory listing", () => {
     expect(auto).toContain('href="?view=grid"');
     expect(auto).toContain('localStorage.getItem("serv-view")');
 
+    // The script scopes both the panels and the toggle links to this element.
+    const rootStart = auto.indexOf("data-listing-view");
+    const rootEnd = auto.indexOf("</section>", rootStart);
+    const rootMarkup = auto.slice(rootStart, rootEnd);
+    expect(rootMarkup).toContain('data-view-link="list"');
+    expect(rootMarkup).toContain('data-view-panel="list"');
+
     const list = await (await respond(dir, "http://localhost/?view=list")).text();
     expect(list).toContain('data-view="list"');
     expect(list).toContain('<div class="listing-view" data-view-panel="list">');
@@ -139,6 +146,10 @@ describe("directory listing", () => {
 
     const grid = await (await respond(dir, "http://localhost/?view=grid")).text();
     expect(grid).toContain('data-view="grid"');
+
+    const invalid = await (await respond(dir, "http://localhost/?view=wat")).text();
+    expect(invalid).toContain('data-view="grid"');
+    expect(invalid).toContain('class="view-option is-active" data-view-link="grid"');
   });
 
   test("grid cards escape names and encode image links", async () => {
@@ -157,19 +168,89 @@ describe("directory listing", () => {
     expect(grid).toContain('href="q%22u%26t.png"');
   });
 
-  test("grid caps at 300 and Show all renders the rest", async () => {
+  test("both views cap at 300 and Show all lifts both", async () => {
     const dir = fixtureDir("grid-cap");
     const total = GRID_LIMIT + 5;
     for (let i = 0; i < total; i++) writeFileSync(join(dir, `f${String(i).padStart(3, "0")}.txt`), "x");
 
     const capped = await (await respond(dir, "http://localhost/?view=grid")).text();
     expect(capped.match(/class="grid-card"/g)?.length).toBe(GRID_LIMIT);
+    expect(capped.match(/<td class="name">/g)?.length).toBe(GRID_LIMIT);
     expect(capped).toContain('href="?view=grid&amp;showall=1"');
+    expect(capped).toContain('href="?view=list&amp;showall=1"');
     expect(capped).toContain(`Show all ${total}`);
+
+    const cappedList = await (await respond(dir, "http://localhost/?view=list")).text();
+    expect(cappedList.match(/class="grid-card"/g)?.length).toBe(GRID_LIMIT);
+    expect(cappedList.match(/<td class="name">/g)?.length).toBe(GRID_LIMIT);
+    expect(cappedList).toContain('href="?view=list&amp;showall=1"');
 
     const all = await (await respond(dir, "http://localhost/?view=grid&showall=1")).text();
     expect(all.match(/class="grid-card"/g)?.length).toBe(total);
+    expect(all.match(/<td class="name">/g)?.length).toBe(total);
     expect(all).not.toContain("Show all");
+
+    const allList = await (await respond(dir, "http://localhost/?view=list&showall=1")).text();
+    expect(allList.match(/<td class="name">/g)?.length).toBe(total);
+    expect(allList).not.toContain("Show all");
+  });
+
+  test("showall is on only for 1, true or a bare parameter", async () => {
+    const dir = fixtureDir("showall");
+    const total = GRID_LIMIT + 1;
+    for (let i = 0; i < total; i++) writeFileSync(join(dir, `f${String(i).padStart(3, "0")}.txt`), "x");
+    const toggleHrefs = (html: string) =>
+      [...html.matchAll(/<a class="view-option[^"]*" data-view-link="[^"]*" href="([^"]*)"/g)].map((m) => m[1]);
+
+    for (const query of ["showall=0", "showall=false", "showall="]) {
+      const html = await (await respond(dir, `http://localhost/?view=grid&${query}`)).text();
+      expect(html.match(/class="grid-card"/g)?.length).toBe(GRID_LIMIT);
+      expect(html).toContain("Show all");
+      expect(toggleHrefs(html)).toEqual(["?view=list", "?view=grid"]);
+    }
+
+    for (const query of ["showall=1", "showall=true", "showall"]) {
+      const html = await (await respond(dir, `http://localhost/?view=grid&${query}`)).text();
+      expect(html.match(/class="grid-card"/g)?.length).toBe(total);
+      expect(html).not.toContain("Show all");
+      expect(toggleHrefs(html)).toEqual([
+        "?view=list&amp;showall=1",
+        "?view=grid&amp;showall=1",
+      ]);
+    }
+  });
+
+  test("every page carries an inline SVG favicon", async () => {
+    const dir = fixtureDir("favicon-page");
+    writeFileSync(join(dir, "a.txt"), "a");
+    writeFileSync(join(dir, "note.md"), "# note\n");
+
+    for (const path of ["/", "/a.txt", "/note.md", "/missing"]) {
+      const html = await (await respond(dir, `http://localhost${path}`)).text();
+      const match = html.match(/<link rel="icon" type="image\/svg\+xml" href="([^"]+)">/);
+      expect(match).not.toBeNull();
+      const href = match![1]!;
+      expect(href.startsWith("data:image/svg+xml,")).toBe(true);
+      const svg = decodeURIComponent(href.slice(href.indexOf(",") + 1));
+      expect(svg).toContain('<rect width="32" height="32" rx="7" fill="#0064e0"/>');
+      expect(svg).toContain("@media (prefers-color-scheme: dark){rect{fill:#0171e3}}");
+      expect(svg).toContain('font-size="28"');
+      expect(svg).toContain('font-weight="800"');
+      expect(svg).toContain('fill="#fff">s</text>');
+    }
+  });
+
+  test("/favicon.ico is 204 unless the root has a real file", async () => {
+    const dir = fixtureDir("favicon-route");
+    const absent = await respond(dir, "http://localhost/favicon.ico");
+    expect(absent.status).toBe(204);
+    expect(await absent.text()).toBe("");
+
+    const ico = Buffer.from([0, 0, 1, 0, 0, 0]);
+    writeFileSync(join(dir, "favicon.ico"), ico);
+    const real = await respond(dir, "http://localhost/favicon.ico");
+    expect(real.status).toBe(200);
+    expect(Array.from(new Uint8Array(await real.arrayBuffer()))).toEqual(Array.from(ico));
   });
 
   test("the current directory breadcrumb keeps its trailing slash", async () => {
@@ -422,6 +503,8 @@ describe("file viewers and request destination", () => {
     for (const name of ["a.png", "b.png", "c.png"]) writeFileSync(join(dir, name), PNG);
     writeFileSync(join(dir, "note.txt"), "not an image");
     mkdirSync(join(dir, "zdir"));
+    // An image-named symlink to a folder must not become a neighbour.
+    symlinkSync(join(dir, "zdir"), join(dir, "b0.png"));
 
     const first = await (await respond(dir, "http://localhost/a.png", documentNav)).text();
     expect(first).toContain("1 / 3");
@@ -437,6 +520,31 @@ describe("file viewers and request destination", () => {
     expect(last).toContain("3 / 3");
     expect(last).toContain('<a class="image-step" rel="prev" href="/b.png"');
     expect(last).not.toContain('<a class="image-step" rel="next"');
+  });
+
+  test("image viewer hrefs and labels escape awkward filenames", async () => {
+    const dir = fixtureDir("image-names");
+    writeFileSync(join(dir, "a<&\"'.png"), PNG);
+    writeFileSync(join(dir, "m.png"), PNG);
+    writeFileSync(join(dir, "z>`&.png"), PNG);
+
+    const html = await (await respond(dir, "http://localhost/m.png", documentNav)).text();
+    expect(html).toContain("2 / 3");
+    expect(html).toContain('rel="prev" href="/a%3C%26%22&#39;.png"');
+    expect(html).toContain('aria-label="Previous image: a&lt;&amp;&quot;&#39;.png"');
+    expect(html).toContain('rel="next" href="/z%3E%60%26.png"');
+    expect(html).toContain('aria-label="Next image: z&gt;`&amp;.png"');
+  });
+
+  test("image viewer neighbours stay inside a nested folder", async () => {
+    const dir = fixtureDir("image-nested");
+    mkdirSync(join(dir, "pics"));
+    for (const name of ["a.png", "b.png", "c.png"]) writeFileSync(join(dir, "pics", name), PNG);
+
+    const html = await (await respond(dir, "http://localhost/pics/b.png", documentNav)).text();
+    expect(html).toContain("2 / 3");
+    expect(html).toContain('rel="prev" href="/pics/a.png"');
+    expect(html).toContain('rel="next" href="/pics/c.png"');
   });
 
   test("JSON and .map pretty-print in the source view; invalid JSON falls back to text", async () => {

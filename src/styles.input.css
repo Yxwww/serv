@@ -572,15 +572,16 @@ body.nav-open .nav-backdrop {
    Listing layout: README beside files, and the list/grid views
    ------------------------------------------------------------------------- */
 .listing-split {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: var(--panel-gap);
   container: listing / inline-size;
 }
 
+.listing-panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--panel-gap);
+}
+
 .readme-panel {
-  flex: 2 1 36rem;
   min-width: 0;
 }
 
@@ -589,13 +590,11 @@ body.nav-open .nav-backdrop {
 }
 
 .files-panel {
-  flex: 1 1 20rem;
   min-width: 0;
   container: files / inline-size;
 }
 
 .files-panel-full {
-  flex: none;
   width: 100%;
 }
 
@@ -756,12 +755,12 @@ body.nav-open .nav-backdrop {
   white-space: nowrap;
 }
 
-.grid-more-wrap {
+.listing-more-wrap {
   margin: 1rem 0 0;
   text-align: center;
 }
 
-.grid-more {
+.listing-more {
   display: inline-flex;
   padding: 0.4rem 0.8rem;
   border: 1px solid var(--color-border);
@@ -772,13 +771,19 @@ body.nav-open .nav-backdrop {
   text-decoration: none;
 }
 
-.grid-more:hover {
+.listing-more:hover {
   border-color: var(--color-border-strong);
   background: var(--color-hover);
 }
 
-/* Sticky only above the 36rem + 20rem + gap wrap point, so stacked layouts never trap scrolling. */
+/* One width rule for both the split and its sticky panel. */
 @container listing (min-width: 58rem) {
+  .listing-panels {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+    align-items: start;
+  }
+
   .files-panel {
     position: sticky;
     top: calc(var(--header-h) + var(--panel-gap));

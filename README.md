@@ -60,7 +60,7 @@ when a wrapper launches the CLI from somewhere else.
 | `/note.md?raw` | the Markdown source as `text/plain` |
 | `/folder/` | listing, grid by default; directories first, then files |
 | `/folder/?view=list`, `/folder/?view=grid` | the chosen view |
-| `/folder/?showall=1` | all grid cards instead of the first 300 |
+| `/folder/?showall=1` | all entries instead of the first 300 |
 | `/folder/?tree` | the sidebar's children for that folder, as an HTML fragment |
 | `/folder/` with `index.html` | that file instead of the listing |
 | `/folder/` with `README.md` | the rendered README beside the files |
@@ -95,15 +95,16 @@ folder and file-type icons, and the name, size and modified time below. The
 List / Grid toggle is two links (`?view=list` and `?view=grid`), so it works
 without JavaScript. With no `view` parameter, a small inline script applies the
 last choice stored in localStorage, falling back to grid. Both views are in the
-page, so applying the stored choice needs no redirect or second request. Grid
-cards stop at 300 with a "Show all" link; the list shows every entry.
+page, so applying the stored choice needs no redirect or second request. Both
+views stop at 300 entries with a "Show all" link. `?showall=1`, `?showall=true`,
+or a bare `?showall` lifts the cap; `0`, `false`, and an empty value do not.
 
-A folder with a `README.md` puts the rendered README on the left and the files
-on the right. The wrapper is a wrapping flex row, so it stacks on its own when
-the content area is narrow. When side by side, the files panel is sticky with
-its own scroll; when stacked it returns to normal page flow so there is no
-nested scroll trap. The files list keeps only name and size when that panel is
-narrow.
+A folder with a `README.md` stacks the README and files by default. Once the
+content area reaches 58rem it becomes a 2:1 row, and the files panel turns
+sticky with its own scroll. One container query controls both, so the split and
+the sticky panel always agree. Stacked layouts stay in normal page flow, so
+there is no nested scroll trap. The files list keeps only name and size when
+that panel is narrow.
 
 ## Source view
 

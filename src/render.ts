@@ -4,6 +4,12 @@ import { fileIcon, folderIcon, menuIcon } from "./icons";
 import { IMAGE_EXTS } from "./types";
 import css from "./styles.css" with { type: "text" };
 
+// Inline so a page never asks the server for an icon. The style element keeps
+// the square readable in dark mode when the browser paints a dark tab strip.
+const FAVICON = "data:image/svg+xml," + encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>@media (prefers-color-scheme: dark){rect{fill:#0171e3}}</style><rect width="32" height="32" rx="7" fill="#0064e0"/><text x="16" y="23.5" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="28" font-weight="800" fill="#fff">s</text></svg>`,
+);
+
 /** Loads collapsed folders on first open, reveals the active entry, closes the drawer. */
 const SCRIPT = `
 function titleize(root) {
@@ -118,6 +124,15 @@ const LISTING_SCRIPT = `
   if (param === "grid" || param === "list") {
     try { localStorage.setItem("serv-view", param); } catch (error) {}
   }
+  // A bare ?showall is on; ?showall= is not. URLSearchParams cannot tell them apart.
+  var bareShowAll = false;
+  var query = location.search.replace(/^\\?/, "");
+  if (query) {
+    var pairs = query.split("&");
+    for (var p = 0; p < pairs.length; p++) if (pairs[p] === "showall") bareShowAll = true;
+  }
+  var showall = params ? params.get("showall") : null;
+  var showAllOn = showall === "1" || showall === "true" || (showall === "" && bareShowAll);
   root.setAttribute("data-view", view);
   var panels = root.querySelectorAll("[data-view-panel]");
   for (var i = 0; i < panels.length; i++) {
@@ -134,13 +149,15 @@ const LISTING_SCRIPT = `
     if (params) {
       var next = new URLSearchParams(params);
       next.set("view", target);
+      if (showAllOn) next.set("showall", "1");
+      else next.delete("showall");
       link.href = location.pathname + "?" + next.toString();
     }
   }
 })();
 `;
 
-/** Grid cards per page before the "show all" link; same ceiling as the tree. */
+/** Entries per view before the "show all" link; same ceiling as the tree. */
 export const GRID_LIMIT = 300;
 
 type View = "list" | "grid";
@@ -252,6 +269,7 @@ function pageShell(opts: {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>${escapeHtml(opts.title)}</title>
+<link rel="icon" type="image/svg+xml" href="${FAVICON}">
 <style>${css}</style>
 ${opts.sidebar ? `<noscript><style>@media (max-width: 799.98px) {
   .sidebar { position: static; inset: auto; width: auto; max-height: 50dvh; transform: none; visibility: visible; border-right: 0; border-bottom: 1px solid var(--color-border); }
@@ -451,7 +469,8 @@ export function renderListing(opts: {
   const showAll = opts.showAll === true;
   const readmeHref = rawHrefFor(opts.rel ? `${opts.rel}/README.md` : "README.md");
 
-  const rows = opts.entries
+  const shown = showAll ? opts.entries : opts.entries.slice(0, GRID_LIMIT);
+  const rows = shown
     .map((e) => {
       const href = encodeURIComponent(e.name) + (e.dir ? "/" : "");
       const label = escapeHtml(e.name) + (e.dir ? "/" : "");
@@ -468,29 +487,33 @@ export function renderListing(opts: {
 ${rows}
 </tbody>
 </table>`;
-  const shown = showAll ? opts.entries : opts.entries.slice(0, GRID_LIMIT);
   const cards = shown.map(gridCard).join("\n");
+  const more = (view: View) =>
+    !showAll && shown.length < opts.entries.length
+      ? `<p class="listing-more-wrap"><a class="listing-more" href="?view=${view}&amp;showall=1">Show all ${opts.entries.length}</a></p>`
+      : "";
   const grid = `<ul class="file-grid" role="list">
 ${cards}
-</ul>${!showAll && shown.length < opts.entries.length ? `<p class="grid-more-wrap"><a class="grid-more" href="?view=grid&amp;showall=1">Show all ${opts.entries.length}</a></p>` : ""}`;
+</ul>${more("grid")}`;
+  const list = `${table}${more("list")}`;
 
   const filesHead = `<div class="panel-head"><h2 class="panel-title">Files <span class="panel-count">${opts.entries.length}</span></h2>${viewToggle(activeView, showAll)}</div>`;
-  const views = `<div class="listing-views" data-listing-view data-view="${activeView}">
-<div class="listing-view" data-view-panel="list"${activeView === "grid" ? " hidden" : ""}>${table}</div>
+  const filesPanel = `<section class="files-panel${opts.readmeHtml ? "" : " files-panel-full"}" data-listing-view data-view="${activeView}">${filesHead}<div class="listing-views">
+<div class="listing-view" data-view-panel="list"${activeView === "grid" ? " hidden" : ""}>${list}</div>
 <div class="listing-view" data-view-panel="grid"${activeView === "list" ? " hidden" : ""}>${grid}</div>
-</div>`;
+</div></section>`;
 
   let body: string;
   if (opts.entries.length === 0) {
     body = `<p class="empty-state">This folder is empty.</p>`;
   } else if (opts.readmeHtml) {
     const notice = opts.readmeTruncated ? truncationNotice(opts.readmeTruncated, readmeHref) : "";
-    body = `<div class="listing-split">
+    body = `<div class="listing-split"><div class="listing-panels">
 <section class="readme-panel"><div class="panel-head"><h2 class="panel-title">README.md</h2><a class="panel-raw" href="${escapeHtml(readmeHref)}">raw</a></div>${notice}<article class="markdown prose max-w-none">${opts.readmeHtml}</article></section>
-<section class="files-panel">${filesHead}${views}</section>
-</div>`;
+${filesPanel}
+</div></div>`;
   } else {
-    body = `<section class="files-panel files-panel-full">${filesHead}${views}</section>`;
+    body = filesPanel;
   }
 
   return pageShell({
