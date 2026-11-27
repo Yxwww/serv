@@ -51,6 +51,11 @@ export function menuIcon(): string {
   return markupFor("menu");
 }
 
+/** Review toggle glyph; the sprite has no message symbol. */
+export function messageIcon(): string {
+  return `<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg>`;
+}
+
 export function closeIcon(): string {
   return markupFor("x");
 }

@@ -1326,6 +1326,57 @@ describe("search bundle", () => {
   });
 });
 
+describe("review bundle", () => {
+  test("src/review/review.bundle.js is the current build of src/review/client.ts", () => {
+    const root = join(import.meta.dir, "..");
+    const out = join(fixtureDir("review-build"), "review.bundle.js");
+    const run = Bun.spawnSync(
+      [
+        process.execPath,
+        "build",
+        join(root, "src/review/client.ts"),
+        "--minify",
+        "--target=browser",
+        "--format=esm",
+        "--outfile",
+        out,
+      ],
+      { cwd: root, stdout: "ignore", stderr: "pipe" },
+    );
+    expect(run.exitCode, run.stderr.toString()).toBe(0);
+    expect(readFileSync(out, "utf8")).toBe(readFileSync(join(root, "src/review/review.bundle.js"), "utf8"));
+  });
+
+  test("the comment bar ships on markdown, source and listing pages, not viewers", async () => {
+    const dir = fixtureDir("review-inject");
+    writeFileSync(join(dir, "note.md"), "# Title\n");
+    writeFileSync(join(dir, "app.ts"), "const a = 1;\n");
+    writeFileSync(join(dir, "pic.png"), "x");
+
+    const modules = (html: string) => html.match(/<script type="module">/g)?.length ?? 0;
+    const markdown = await (await respond(dir, "http://localhost/note.md")).text();
+    expect(markdown).toContain('id="serv-review-bar"');
+    expect(markdown).toContain('id="serv-review-toggle"');
+    expect(markdown).toContain('class="min-h-dvh bg-body text-primary serv-review-page"');
+    expect(modules(markdown)).toBe(2);
+
+    const source = await (await respond(dir, "http://localhost/app.ts")).text();
+    expect(source).toContain('id="serv-review-bar"');
+    expect(modules(source)).toBe(2);
+
+    const listing = await (await respond(dir, "http://localhost/")).text();
+    expect(listing).toContain('id="serv-review-bar"');
+    expect(modules(listing)).toBe(2);
+
+    const image = await (
+      await respond(dir, "http://localhost/pic.png", { "sec-fetch-dest": "document" })
+    ).text();
+    expect(image).not.toContain('id="serv-review-bar"');
+    expect(image).not.toContain('class="min-h-dvh bg-body text-primary serv-review-page"');
+    expect(modules(image)).toBe(1);
+  });
+});
+
 describe("stylesheet", () => {
   test("src/styles.css is the current build of src/styles.input.css", () => {
     const root = join(import.meta.dir, "..");

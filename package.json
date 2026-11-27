@@ -10,6 +10,7 @@
     "src",
     "THIRD_PARTY_NOTICES.md",
     "!src/*.test.ts",
+    "!src/review/*.test.ts",
     "!src/styles.input.css"
   ],
   "engines": {
@@ -21,7 +22,8 @@
     "build:icons": "bun scripts/build-file-icons.ts",
     "build:css": "tailwindcss -i ./src/styles.input.css -o ./src/styles.css --minify",
     "build:search": "bun build src/search.ts --minify --target=browser --format=esm --outfile=src/search.bundle.js",
-    "build": "bun run build:icons && bun run build:css && bun run build:search"
+    "build:review": "bun build src/review/client.ts --minify --target=browser --format=esm --outfile=src/review/review.bundle.js",
+    "build": "bun run build:icons && bun run build:css && bun run build:search && bun run build:review"
   },
   "keywords": [
     "bun",

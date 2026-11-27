@@ -1,12 +1,13 @@
 import { readdirSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import { fileIcon, folderIcon, menuIcon } from "./icons";
+import { closeIcon, fileIcon, folderIcon, menuIcon, messageIcon } from "./icons";
 import { SPRITE_URL } from "./file-icons";
 import { IMAGE_EXTS } from "./types";
 import { isHiddenPath, rowPath, type Entry as Tag } from "./files";
 import { SHOW_HIDDEN_CLASS, SHOW_IGNORED_CLASS, rowHidden } from "./visibility";
 import css from "./styles.css" with { type: "text" };
 import searchScript from "./search.bundle.js" with { type: "text" };
+import reviewScript from "./review/review.bundle.js" with { type: "text" };
 
 /** One default each; the client toggles these and the head script restores them. */
 export const SHOW_HIDDEN_DEFAULT = false;
@@ -19,7 +20,7 @@ const DEFAULT_CLASSES = [
 ].filter(Boolean).join(" ");
 
 // Runs in <head>, so rows are already hidden or shown on the first paint.
-export const PRE_PAINT = `(function(){var e=document.documentElement;e.classList.add("serv-js");try{var h=localStorage.getItem("${SHOW_HIDDEN_CLASS}");var i=localStorage.getItem("${SHOW_IGNORED_CLASS}");if(h!==null)e.classList.toggle("${SHOW_HIDDEN_CLASS}",h==="1");if(i!==null)e.classList.toggle("${SHOW_IGNORED_CLASS}",i==="1")}catch(_){}try{if(e.classList.contains("serv-md-page")){var p=new URLSearchParams(location.search).get("view");var v=p==="source"||p==="rendered"?p:null;if(!v){var s=localStorage.getItem("${MD_VIEW_KEY}");if(s==="source"||s==="rendered")v=s}if(v){e.classList.toggle("serv-md-source",v==="source");e.classList.toggle("serv-md-rendered",v==="rendered")}}}catch(_){}})()`;
+export const PRE_PAINT = `(function(){var e=document.documentElement;e.classList.add("serv-js");try{var h=localStorage.getItem("${SHOW_HIDDEN_CLASS}");var i=localStorage.getItem("${SHOW_IGNORED_CLASS}");if(h!==null)e.classList.toggle("${SHOW_HIDDEN_CLASS}",h==="1");if(i!==null)e.classList.toggle("${SHOW_IGNORED_CLASS}",i==="1")}catch(_){}try{if(e.classList.contains("serv-md-page")){var p=new URLSearchParams(location.search).get("view");var v=p==="source"||p==="rendered"?p:null;if(!v){var s=localStorage.getItem("${MD_VIEW_KEY}");if(s==="source"||s==="rendered")v=s}if(v){e.classList.toggle("serv-md-source",v==="source");e.classList.toggle("serv-md-rendered",v==="rendered")}}}catch(_){}try{if(localStorage.getItem("serv:review:open")==="1")e.classList.add("review-open")}catch(_){}})()`;
 
 // Inline so a page never asks the server for an icon. The style element keeps
 // the square readable in dark mode when the browser paints a dark tab strip.
@@ -227,6 +228,19 @@ const MD_SCRIPT = `
 })();
 `;
 
+/** Review comment bar; the client fills the list and drives the open state. */
+const REVIEW_TOGGLE = `<button type="button" id="serv-review-toggle" class="review-toggle" title="Review comments" aria-label="Review comments" aria-controls="serv-review-bar" aria-expanded="false">${messageIcon()}<span class="review-badge" data-review-badge hidden>0</span></button>`;
+
+const REVIEW_BAR = `<aside class="review-bar" id="serv-review-bar" aria-label="Review comments">
+<div class="review-head">
+<h2 class="review-title">Comments <span class="review-total" data-review-total>0</span></h2>
+<div class="review-actions"><button type="button" class="review-action" data-review-copy>Copy review</button><button type="button" class="review-action" data-review-clear>Clear</button></div>
+<button type="button" class="review-close" data-review-close title="Close review comments" aria-label="Close review comments">${closeIcon()}</button>
+</div>
+<div class="review-list" data-review-list></div>
+</aside>
+<div class="review-backdrop" data-review-close aria-hidden="true"></div>`;
+
 const PALETTE = `<div class="palette" id="serv-palette" hidden>
 <div class="palette-backdrop" data-palette-close></div>
 <div class="palette-panel" role="dialog" aria-modal="true" aria-label="Search files">
@@ -321,7 +335,9 @@ function pageShell(opts: {
   bodyScript?: string;
   headerTools?: string;
   htmlClass?: string;
+  review?: boolean; // pages where the comment bar is injected
 }): string {
+  const review = opts.review === true;
   let trail = "";
   opts.crumbs.forEach((c, i) => {
     const last = i === opts.crumbs.length - 1;
@@ -361,22 +377,23 @@ ${opts.sidebar ? `<noscript><style>@media (max-width: 799.98px) {
   .nav-btn, .nav-close, .nav-backdrop { display: none; }
 }</style></noscript>` : ""}
 </head>
-<body class="min-h-dvh bg-body text-primary">
+<body class="min-h-dvh bg-body text-primary${review ? " serv-review-page" : ""}">
 <div class="app">
 ${sidebar}
 <div class="flex min-h-dvh min-w-0 flex-col">
 <header class="sticky top-0 z-20 flex h-[var(--header-h)] shrink-0 items-center gap-2 border-b border-border bg-body/85 px-6 backdrop-blur md:px-10 xl:px-12">
 ${menu}
 <nav class="crumbbar flex-1" title="${escapeHtml(fullPath)}">${trail}</nav>
-${headerTools}
+${headerTools}${review ? REVIEW_TOGGLE : ""}
 ${raw}
 </header>
 <main class="w-full px-6 py-8 md:px-10 md:py-10 xl:px-12">${opts.body}</main>
 </div>
 </div>
 ${backdrop}
+${review ? REVIEW_BAR : ""}
 ${PALETTE}
-${script}${bodyScript}<script type="module">${searchScript}</script>
+${script}${bodyScript}<script type="module">${searchScript}</script>${review ? `<script type="module">${reviewScript}</script>` : ""}
 </body>
 </html>`;
 }
@@ -432,6 +449,7 @@ export function renderMarkdownPage(opts: {
     headerTools: mdToggle(view),
     htmlClass: `serv-md-page serv-md-${view}`,
     bodyScript: MD_SCRIPT,
+    review: true,
   });
 }
 
@@ -458,6 +476,7 @@ export function renderSourcePage(opts: {
     rawHref,
     rawBlank: opts.rawBlank,
     sidebar: opts.sidebar,
+    review: true,
   });
 }
 
@@ -681,6 +700,7 @@ ${cards}
     body,
     sidebar: opts.sidebar,
     bodyScript: opts.entries.length ? LISTING_SCRIPT : undefined,
+    review: true,
   });
 }
 
