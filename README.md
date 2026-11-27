@@ -255,6 +255,8 @@ File-type icons come from a 49-glyph subset of [Tabler Icons](https://tabler.io/
 and special filenames to sprite ids and generates `src/file-icons.ts` and
 `src/file-icon-sprite.ts`; the sprite is served once per browser cache at
 `/?icons=<hash>` with immutable caching, and rows reference it with `<use>`.
+Because the glyphs live in that sprite, a page saved with “Save Page As” or
+opened without serv shows no icons.
 
 ## Credits
 

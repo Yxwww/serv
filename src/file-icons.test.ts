@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SPRITE } from "./file-icon-sprite";
-import { EXTENSION_ICONS, SPECIAL_NAMES, SPRITE_HASH, SPRITE_URL, iconIdFor } from "./file-icons";
-import { paletteIcon } from "./icons";
+import { EXTENSION_ICONS, SPECIAL_NAMES, SPRITE_HASH, SPRITE_URL, iconIdFor, type IconId } from "./file-icons";
+import { hasIconMarkup, paletteIcon } from "./icons";
 import { respond } from "./serve";
 import {
   AUDIO_EXTS,
@@ -59,6 +59,15 @@ describe("file icon mapping", () => {
     expect(iconIdFor("anything", true)).toBe("folder");
     expect(symbolSet.has("folder")).toBe(true);
     expect(iconIdFor("mystery.qqq", false)).toBe("file");
+
+    const reachable: IconId[] = [
+      ...EXTENSION_ICONS.values(),
+      ...SPECIAL_NAMES.values(),
+      "file",
+      "file-settings",
+      "folder",
+    ];
+    for (const id of reachable) expect(hasIconMarkup(id), id).toBe(true);
   });
 
   test("matching is case-insensitive", () => {
@@ -82,11 +91,22 @@ describe("rendered icons", () => {
     writeFileSync(join(dir, "sub", "child.tsx"), "x");
 
     const html = await (await respond(dir, "http://localhost/")).text();
+    expect(html).toContain(
+      `<link rel="preload" as="image" type="image/svg+xml" href="${SPRITE_URL}">`,
+    );
     const body = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
     // One <use> per row and no path data: the sprite carries every glyph once.
     expect(body).not.toContain("<path");
     expect(body).toContain(`<use href="${SPRITE_URL}#fi-`);
     expect(useIds(body).length).toBe(7);
+
+    const gridHtml = await (await respond(dir, "http://localhost/?view=grid")).text();
+    const gridStart = gridHtml.indexOf('<ul class="file-grid"');
+    const grid = gridHtml.slice(gridStart, gridHtml.indexOf("</ul>", gridStart));
+    // The image card uses <img>; the folder and five file cards use the sprite.
+    expect(grid).not.toContain("<path");
+    expect(grid).toContain(`<use href="${SPRITE_URL}#fi-`);
+    expect(useIds(grid).length).toBe(6);
 
     const frag = await (await respond(dir, "http://localhost/sub/?tree")).text();
     expect(useIds(frag).length).toBe(1);
@@ -118,6 +138,12 @@ describe("sprite route", () => {
     expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
     expect(res.headers.get("etag")).toBe(`"${SPRITE_HASH}"`);
     expect(await res.text()).toBe(SPRITE);
+
+    const image = await respond(dir, `http://localhost/?icons=${SPRITE_HASH}`, {
+      "sec-fetch-dest": "image",
+    });
+    expect(image.status).toBe(200);
+    expect(image.headers.get("content-type")).toBe("image/svg+xml; charset=utf-8");
 
     // Immutable means a stale hash must not pin old content.
     const stale = await respond(dir, "http://localhost/?icons=000000000000");

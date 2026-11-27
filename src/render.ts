@@ -1,6 +1,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { fileIcon, folderIcon, menuIcon } from "./icons";
+import { SPRITE_URL } from "./file-icons";
 import { IMAGE_EXTS } from "./types";
 import { isHiddenPath, rowPath, type Entry as Tag } from "./files";
 import { SHOW_HIDDEN_CLASS, SHOW_IGNORED_CLASS, rowHidden } from "./visibility";
@@ -352,6 +353,7 @@ function pageShell(opts: {
 <meta name="color-scheme" content="light dark">
 <title>${escapeHtml(opts.title)}</title>
 <link rel="icon" type="image/svg+xml" href="${FAVICON}">
+<link rel="preload" as="image" type="image/svg+xml" href="${SPRITE_URL}">
 <script>${PRE_PAINT}</script>
 <style>${css}</style>
 ${opts.sidebar ? `<noscript><style>@media (max-width: 799.98px) {
