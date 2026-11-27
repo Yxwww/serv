@@ -2,6 +2,7 @@ import { Fzf, type FzfResultItem } from "fzf";
 import { paletteIcon } from "./icons";
 import type { Entry as FileEntry, FileList } from "./files";
 import { FILE_LIMIT, SHOW_HIDDEN_CLASS, SHOW_IGNORED_CLASS, rowHidden } from "./visibility";
+import { isEditable, resultHref } from "./browser";
 
 // ---------------------------------------------------------------------------
 // Pure helpers, exported so tests can prove names stay data.
@@ -59,20 +60,6 @@ export function originalPositions(text: string, positions: ReadonlySet<number>):
     originalIndex += originalLength;
   }
   return mapped;
-}
-
-/** A path from the root listing to a same-origin href, one segment at a time. */
-export function resultHref(path: string): string {
-  const dir = path.endsWith("/");
-  const bare = dir ? path.slice(0, -1) : path;
-  return "/" + bare.split("/").map(encodeURIComponent).join("/") + (dir ? "/" : "");
-}
-
-export function isEditable(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null;
-  if (!el || !el.tagName) return false;
-  const tag = el.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
 
 // ---------------------------------------------------------------------------

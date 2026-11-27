@@ -10,7 +10,7 @@ function iconMarkup(id: IconId): string {
 
 // Every id `iconIdFor` can return, plus the UI-only glyphs. Building this once
 // makes each rendered row a map lookup instead of a template allocation.
-const UI_IDS: IconId[] = ["file", "file-settings", "folder", "folder-open", "menu", "x"];
+const UI_IDS: IconId[] = ["file", "file-settings", "folder", "folder-open", "menu", "message", "x"];
 
 function buildMarkup(): Map<IconId, string> {
   const markup = new Map<IconId, string>();
@@ -49,6 +49,10 @@ export function folderOpenIcon(): string {
 
 export function menuIcon(): string {
   return markupFor("menu");
+}
+
+export function messageIcon(): string {
+  return markupFor("message");
 }
 
 export function closeIcon(): string {

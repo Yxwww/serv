@@ -207,6 +207,23 @@ autolinks. Heading ids follow GitHub's slugger, so anchors such as
 One edge case: enclosed alphanumerics and combining marks can produce a
 different id than GitHub does.
 
+## Comments
+
+Select text in a Markdown preview or on a source or text page and a floating
+**Comment** button appears. Comments collect in the right bar, persist in this
+browser's `localStorage`, sync across tabs, and jump back to their quoted lines.
+Comments are browser-only: serv has no write routes.
+
+**Copy comments** produces a Markdown block meant for an AI agent. Each comment
+has a `path:line` heading, the whole source line as a blockquote, a `Selected:`
+fragment when the selection was only part of those lines, and the comment body
+(escaped so it cannot forge extra headings or quotes). Preview selections are
+mapped back through the Markdown to raw source lines. The export also records
+the served root as a `Root:` line so relative paths resolve.
+
+That root is exposed as `data-serv-root` on the page. It only matters on the
+localhost-only server and never leaves the browser.
+
 ## Security
 
 - Binds `127.0.0.1` only, so it is not reachable from other machines.
@@ -225,6 +242,7 @@ different id than GitHub does.
 bun install          # build tooling only; nothing is required at runtime
 bun run build:css    # regenerate src/styles.css from src/styles.input.css
 bun run build:search # regenerate src/search.bundle.js from src/search.ts
+bun run build:review # regenerate src/review/review.bundle.js from src/review/client.ts
 bun test             # tests live next to the code in src/
 bunx tsc --noEmit    # typecheck
 bun run start        # run the CLI from the checkout
@@ -234,7 +252,8 @@ CI runs `bun test` and the typecheck on Bun 1.3.8. The stylesheet test rebuilds
 `src/styles.css` and fails if it differs, so a forgotten `build:css` cannot land.
 The same is true of `src/search.bundle.js`, which is the browser bundle of
 `src/search.ts` (with its fzf ranking) inlined into every page; a forgotten
-`build:search` fails the bundle test.
+`build:search` fails the bundle test. `src/review/review.bundle.js` is likewise
+built from `src/review/client.ts` and checked for freshness.
 
 Claude Code contributors: `.claude/skills/dev/SKILL.md` covers the repo map, invariants, dev loop, and review workflow.
 
@@ -248,9 +267,13 @@ files.
 sidebar and its lazy fragments, `src/serve.ts` does routing and content types,
 `src/types.ts` holds the extension table shared by routing and icons,
 `src/icons.ts` holds the shared UI icons, and `src/cli.ts` handles flags, the
-port, and opening the browser.
+port, and opening the browser. Review comments split into
+`src/review/model.ts` (pure state, anchors, Markdown export),
+`src/review/client.ts` (selection/highlight/bar wiring), and
+`src/review/keys.ts` (server/client class and key names);
+`src/browser.ts` holds the DOM helpers shared with search.
 
-File-type icons come from a 49-glyph subset of [Tabler Icons](https://tabler.io/icons)
+File-type icons come from a 50-glyph subset of [Tabler Icons](https://tabler.io/icons)
 (MIT). `scripts/build-file-icons.ts` (`bun run build:icons`) maps extensions
 and special filenames to sprite ids and generates `src/file-icons.ts` and
 `src/file-icon-sprite.ts`; the sprite is served once per browser cache at

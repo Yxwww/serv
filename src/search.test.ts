@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Fzf } from "fzf";
 import { PRE_PAINT } from "./render";
-import { dispatchKey, highlightSegments, initSearch, originalPositions, resultHref, type Binding } from "./search";
+import { dispatchKey, highlightSegments, initSearch, originalPositions, type Binding } from "./search";
+import { resultHref } from "./browser";
 
 type FakeElement = {
   tagName: string;
@@ -305,6 +306,12 @@ describe("resultHref", () => {
     expect(resultHref("a b/<x>.md")).toBe("/a%20b/%3Cx%3E.md");
     expect(resultHref("sub/")).toBe("/sub/");
     expect(resultHref("sub/a#b.md")).toBe("/sub/a%23b.md");
+  });
+
+  test("leading slashes stay same-origin instead of becoming //host", () => {
+    expect(resultHref("/src/a b.ts")).toBe("/src/a%20b.ts");
+    expect(resultHref("/")).toBe("/");
+    expect(resultHref("//src//a.ts")).toBe("/src/a.ts");
   });
 });
 

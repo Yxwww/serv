@@ -61,6 +61,7 @@ const ICON_NAMES = [
   "lock",
   "markdown",
   "menu",
+  "message",
   "photo",
   "video",
   "x",
