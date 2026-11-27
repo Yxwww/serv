@@ -372,6 +372,13 @@ export function initSearch(doc: Document): void {
   updateIndicator();
 
   const hasViewer = (): boolean => doc.getElementById("serv-viewer-img") !== null;
+  const hasMdView = (): boolean => doc.querySelector("[data-md-view]") !== null;
+  const mdTarget = (): HTMLElement | null =>
+    doc.querySelector<HTMLElement>(
+      doc.documentElement.classList.contains("serv-md-source")
+        ? '[data-md-link="rendered"]'
+        : '[data-md-link="source"]',
+    );
   const navOpen = (): boolean => doc.body.classList.contains("nav-open");
   const step = (direction: "prev" | "next"): void => {
     doc.querySelector<HTMLElement>(`.image-step[rel="${direction}"]`)?.click();
@@ -384,6 +391,7 @@ export function initSearch(doc: Document): void {
     { key: "k", mod: true, allowInEditable: true, when: () => !isPaletteOpen(), run: open },
     { key: "h", shift: true, when: () => !isPaletteOpen(), run: () => toggle("hidden") },
     { key: "i", shift: true, when: () => !isPaletteOpen(), run: () => toggle("ignored") },
+    { key: "s", shift: true, when: () => !isPaletteOpen() && hasMdView(), run: () => mdTarget()?.click() },
     { key: "arrowdown", allowInEditable: true, when: isPaletteOpen, run: () => move(1) },
     { key: "n", mod: true, allowInEditable: true, when: isPaletteOpen, run: () => move(1) },
     { key: "arrowup", allowInEditable: true, when: isPaletteOpen, run: () => move(-1) },

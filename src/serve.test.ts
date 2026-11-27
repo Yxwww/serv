@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "./cli";
 import { scanFiles, tagRows } from "./files";
-import { ENTRY_LIMIT, listEntries, renderListing, renderMarkdownHtml, renderMarkdownPage } from "./render";
+import { ENTRY_LIMIT, listEntries, renderListing, renderMarkdownHtml, renderMarkdownPage, renderSourcePage } from "./render";
 import { resolveInput, resolveRequest, respond, SOURCE_LIMIT } from "./serve";
 import { MAX_TREE_ENTRIES, readTreeLevel, readTreeLevels, renderSidebar, renderTreeFragment } from "./tree";
 
@@ -70,6 +70,47 @@ describe("markdown", () => {
     const shell = await respond(dir, "http://localhost/note.md");
     expect(shell.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(shell.headers.get("vary")).toBe("Sec-Fetch-Dest");
+  });
+
+  test("both panels ship in the page; ?view= picks the initial one; source is escaped", async () => {
+    const dir = fixtureDir("md-view");
+    writeFileSync(join(dir, "note.md"), "# Title\n\n<script>alert(1)</script>\n");
+
+    const auto = await (await respond(dir, "http://localhost/note.md")).text();
+    expect(auto).toContain('class="serv-md-page serv-md-rendered"');
+    expect(auto).toContain('<div class="md-view" data-md-view>');
+    expect(auto).toContain('<div class="md-panel" data-md-panel="rendered"><article class="markdown prose max-w-none">');
+    expect(auto).toContain('<div class="md-panel" data-md-panel="source">');
+    expect(auto).toContain('class="view-option is-active" data-md-link="rendered" href="?view=rendered" aria-current="true">Preview</a>');
+    expect(auto).toContain('class="view-option" data-md-link="source" href="?view=source">Source</a>');
+    expect(auto).toContain('localStorage.getItem("serv-md-view")');
+
+    // The source panel holds the Markdown itself, escaped as text.
+    const sourcePanel = auto.slice(auto.indexOf('data-md-panel="source"'));
+    expect(sourcePanel).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(sourcePanel).not.toContain("<script>alert(1)</script>");
+
+    const source = await (await respond(dir, "http://localhost/note.md?view=source")).text();
+    expect(source).toContain('class="serv-md-page serv-md-source"');
+    expect(source).toContain('class="view-option is-active" data-md-link="source" href="?view=source" aria-current="true">Source</a>');
+    expect(source).toContain('class="view-option" data-md-link="rendered" href="?view=rendered">Preview</a>');
+
+    // An unknown value falls back to the rendered default.
+    const invalid = await (await respond(dir, "http://localhost/note.md?view=wat")).text();
+    expect(invalid).toContain('class="serv-md-page serv-md-rendered"');
+  });
+
+  test("a non-Markdown source page keeps its exact body and gains no toggle", () => {
+    const text = "const a = 1;\nif (a < 2) {\n  run();\n}\n";
+    const html = renderSourcePage({ text, rootLabel: "root", rel: "app.ts" });
+    expect(html).toContain(
+      '<div class="source"><pre class="gutter" aria-hidden="true">1\n2\n3\n4</pre><pre class="code"><code>const a = 1;\nif (a &lt; 2) {\n  run();\n}</code></pre></div>',
+    );
+    // The CSS mentions the panel selectors, so assert the page carries no panel.
+    expect(html).not.toContain('class="md-view"');
+    expect(html).not.toContain('class="md-panel"');
+    expect(html).toContain('<html lang="en">');
+    expect(html).not.toContain("md-toggle");
   });
 });
 
@@ -405,6 +446,8 @@ describe("source view", () => {
     const html = await page.text();
     expect(html).toContain('<aside class="sidebar"');
     expect(html).toContain('<div class="source">');
+    expect(html).not.toContain('class="md-view"');
+    expect(html).not.toContain('class="md-panel"');
     expect(html).toContain('<pre class="gutter" aria-hidden="true">1\n2\n3\n4</pre>');
     expect(html).toContain("<code>const a = 1;\nif (a &lt; 2) {");
     expect(html).toContain('href="/app.ts?raw"');
