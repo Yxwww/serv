@@ -1358,14 +1358,18 @@ describe("review bundle", () => {
     expect(markdown).toContain('id="serv-review-bar"');
     expect(markdown).toContain('id="serv-review-toggle"');
     expect(markdown).toContain('class="min-h-dvh bg-body text-primary serv-review-page"');
+    expect(markdown).toContain(`data-serv-root="${dir}"`);
+    expect(markdown).toContain(">Copy comments</button>");
     expect(modules(markdown)).toBe(2);
 
     const source = await (await respond(dir, "http://localhost/app.ts")).text();
     expect(source).toContain('id="serv-review-bar"');
+    expect(source).toContain(`data-serv-root="${dir}"`);
     expect(modules(source)).toBe(2);
 
     const listing = await (await respond(dir, "http://localhost/")).text();
     expect(listing).toContain('id="serv-review-bar"');
+    expect(listing).toContain(`data-serv-root="${dir}"`);
     expect(modules(listing)).toBe(2);
 
     const image = await (
@@ -1373,6 +1377,7 @@ describe("review bundle", () => {
     ).text();
     expect(image).not.toContain('id="serv-review-bar"');
     expect(image).not.toContain('class="min-h-dvh bg-body text-primary serv-review-page"');
+    expect(image).not.toContain("data-serv-root");
     expect(modules(image)).toBe(1);
   });
 });

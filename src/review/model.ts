@@ -3,7 +3,16 @@
 export const STORAGE_KEY = "serv:review";
 
 export type LineAnchor = { kind: "lines"; start: number; end: number; quote: string };
-export type QuoteAnchor = { kind: "quote"; quote: string; prefix: string; suffix: string };
+export type QuoteAnchor = {
+  kind: "quote";
+  quote: string;
+  prefix: string;
+  suffix: string;
+  /** Source lines behind a rendered selection; absent for old entries. */
+  lines?: { start: number; end: number };
+  /** Raw Markdown for `lines`, so exports can be grepped in the source. */
+  excerpt?: string;
+};
 export type Anchor = LineAnchor | QuoteAnchor;
 
 export interface ReviewComment {
@@ -40,7 +49,24 @@ function parseAnchor(value: unknown): Anchor | null {
     if (typeof value.quote !== "string") return null;
     if (typeof value.prefix !== "string") return null;
     if (typeof value.suffix !== "string") return null;
-    return { kind: "quote", quote: value.quote, prefix: value.prefix, suffix: value.suffix };
+    const anchor: QuoteAnchor = {
+      kind: "quote",
+      quote: value.quote,
+      prefix: value.prefix,
+      suffix: value.suffix,
+    };
+    if (value.lines !== undefined) {
+      if (!isRecord(value.lines)) return null;
+      if (typeof value.lines.start !== "number" || !Number.isInteger(value.lines.start)) return null;
+      if (typeof value.lines.end !== "number" || !Number.isInteger(value.lines.end)) return null;
+      if (value.lines.start < 1 || value.lines.end < value.lines.start) return null;
+      anchor.lines = { start: value.lines.start, end: value.lines.end };
+    }
+    if (value.excerpt !== undefined) {
+      if (typeof value.excerpt !== "string") return null;
+      anchor.excerpt = value.excerpt;
+    }
+    return anchor;
   }
   return null;
 }
@@ -82,7 +108,15 @@ function cloneAnchor(anchor: Anchor): Anchor {
   if (anchor.kind === "lines") {
     return { kind: "lines", start: anchor.start, end: anchor.end, quote: anchor.quote };
   }
-  return { kind: "quote", quote: anchor.quote, prefix: anchor.prefix, suffix: anchor.suffix };
+  const copy: QuoteAnchor = {
+    kind: "quote",
+    quote: anchor.quote,
+    prefix: anchor.prefix,
+    suffix: anchor.suffix,
+  };
+  if (anchor.lines !== undefined) copy.lines = { start: anchor.lines.start, end: anchor.lines.end };
+  if (anchor.excerpt !== undefined) copy.excerpt = anchor.excerpt;
+  return copy;
 }
 
 function cloneComment(comment: ReviewComment): ReviewComment {
@@ -208,6 +242,133 @@ export function lineRangeFromOffsets(text: string, start: number, end: number): 
   return { start: startLine, end: endLine };
 }
 
+/** Punctuation that Markdown rendering removes or rewrites. */
+function isMarkdownNoise(code: number): boolean {
+  if (code <= 32) return true; // whitespace, newlines, tabs
+  switch (code) {
+    case 33: // !
+    case 35: // #
+    case 40: // (
+    case 41: // )
+    case 42: // *
+    case 43: // +
+    case 45: // -
+    case 58: // :
+    case 61: // =
+    case 62: // >
+    case 91: // [
+    case 92: // backslash
+    case 93: // ]
+    case 95: // _
+    case 96: // `
+    case 124: // |
+    case 126: // ~
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Last char of a balanced `(...)` run, or the end of the string. */
+function skipParens(text: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 92) {
+      i++; // escaped char
+      continue;
+    }
+    if (code === 40) depth++;
+    else if (code === 41 && --depth === 0) return i;
+  }
+  return text.length - 1;
+}
+
+/** Last char of an image's `![alt](url)`; alt text is absent from rendered text. */
+function skipImage(text: string, bang: number): number {
+  let depth = 1;
+  let i = bang + 2;
+  for (; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 92) {
+      i++;
+      continue;
+    }
+    if (code === 91) depth++;
+    else if (code === 93 && --depth === 0) break;
+  }
+  if (i >= text.length) return text.length - 1;
+  if (text.charCodeAt(i + 1) === 40) return skipParens(text, i + 1);
+  return i;
+}
+
+/** Normalized source plus the raw offset of every kept code unit. */
+function normalizeSource(source: string): { text: string; map: Int32Array } {
+  let text = "";
+  const map = new Int32Array(source.length);
+  let kept = 0;
+  for (let i = 0; i < source.length; i++) {
+    const code = source.charCodeAt(i);
+    if (code === 33 && source.charCodeAt(i + 1) === 91) {
+      i = skipImage(source, i);
+      continue;
+    }
+    if (code === 93 && source.charCodeAt(i + 1) === 40) {
+      i = skipParens(source, i + 1);
+      continue;
+    }
+    if (isMarkdownNoise(code)) continue;
+    map[kept++] = i;
+    text += source[i];
+  }
+  return { text, map };
+}
+
+function normalizeRendered(rendered: string): string {
+  let text = "";
+  for (let i = 0; i < rendered.length; i++) {
+    if (!isMarkdownNoise(rendered.charCodeAt(i))) text += rendered[i];
+  }
+  return text;
+}
+
+/**
+ * Map rendered selection text back to the raw Markdown's line range. `hintOffset`
+ * is an approximate raw source offset; among equal normalized matches it picks
+ * the nearest, which keeps repeated table cells on the right row.
+ */
+export function mapToSourceLines(
+  source: string,
+  rendered: string,
+  hintOffset?: number,
+): { start: number; end: number } | null {
+  const needle = normalizeRendered(rendered);
+  if (needle === "") return null;
+  const normalized = normalizeSource(source);
+  const haystack = normalized.text;
+  if (haystack === "") return null;
+
+  let index = haystack.indexOf(needle);
+  if (index === -1) return null;
+
+  if (hintOffset !== undefined) {
+    let best = index;
+    let bestDistance = Math.abs(normalized.map[index]! - hintOffset);
+    while ((index = haystack.indexOf(needle, index + 1)) !== -1) {
+      const distance = Math.abs(normalized.map[index]! - hintOffset);
+      if (distance < bestDistance) {
+        best = index;
+        bestDistance = distance;
+      }
+    }
+    index = best;
+  }
+
+  const start = normalized.map[index]!;
+  const end = normalized.map[index + needle.length - 1]! + 1;
+  return lineRangeFromOffsets(source, start, end);
+}
+
 /** 1-based inclusive lines to char offsets, end excluding the line's "\n". */
 export function lineOffsets(text: string, start: number, end: number): { start: number; end: number } {
   let first = start;
@@ -313,44 +474,53 @@ export function findQuote(text: string, a: QuoteAnchor): { start: number; end: n
   return bestStart === -1 ? null : { start: bestStart, end: bestStart + quote.length };
 }
 
-const MAX_QUOTE_LINES = 20;
+const MAX_QUOTE_LINES = 6;
 
 function displayPath(path: string): string {
   return path.charCodeAt(0) === 47 ? path.slice(1) : path;
 }
 
 function quoteMarkdown(quote: string): string {
-  const trimmed = quote.replace(/\s+$/, "");
-  const lines = trimmed.split("\n");
-  const limit = lines.length > MAX_QUOTE_LINES ? MAX_QUOTE_LINES : lines.length;
+  const lines = quote.replace(/\s+$/, "").split("\n");
+  for (let i = 0; i < lines.length; i++) lines[i] = lines[i]!.replace(/\s+$/, "");
+  let shown = lines;
+  if (lines.length > MAX_QUOTE_LINES) {
+    shown = [lines[0]!, lines[1]!, "…", lines[lines.length - 2]!, lines[lines.length - 1]!];
+  }
   const out: string[] = [];
-  for (let i = 0; i < limit; i++) out.push(lines[i] === "" ? ">" : "> " + lines[i]);
-  if (lines.length > MAX_QUOTE_LINES) out.push("> …");
+  for (let i = 0; i < shown.length; i++) out.push(shown[i] === "" ? ">" : "> " + shown[i]);
   return out.join("\n");
 }
 
-function commentBlock(comment: ReviewComment): string {
+function commentBlock(comment: ReviewComment, index: number): string {
   const path = displayPath(comment.path);
-  let heading = path;
-  if (comment.anchor.kind === "lines") {
-    heading =
-      comment.anchor.start === comment.anchor.end
-        ? `${path}:${comment.anchor.start}`
-        : `${path}:${comment.anchor.start}-${comment.anchor.end}`;
+  const anchor = comment.anchor;
+  const lines = anchor.kind === "lines" ? anchor : anchor.lines;
+  let location = `${path} (no line match)`;
+  if (lines) {
+    location =
+      lines.start === lines.end ? `${path}:${lines.start}` : `${path}:${lines.start}-${lines.end}`;
   }
-  return `## ${heading}\n${quoteMarkdown(comment.anchor.quote)}\n\n${comment.body}`;
+  const quote =
+    anchor.kind === "lines"
+      ? anchor.quote
+      : anchor.excerpt !== undefined && anchor.excerpt !== ""
+        ? anchor.excerpt
+        : anchor.quote;
+  return `### ${index}. ${location}\n${quoteMarkdown(quote)}\n\n**Comment:** ${comment.body}`;
 }
 
-export function toMarkdown(s: ReviewState, date: string): string {
+export function toMarkdown(s: ReviewState, date: string, root?: string): string {
+  const header = `# Comments — ${date}\n${root === undefined ? "" : `Root: ${root}\n`}\n`;
   const groups = groupByPath(s);
-  const header = `# Review — ${date}\n\n`;
   if (groups.length === 0) return `${header}_No comments._\n`;
 
   const blocks: string[] = [];
+  let index = 0;
   for (let i = 0; i < groups.length; i++) {
     for (let j = 0; j < groups[i].comments.length; j++) {
-      blocks.push(commentBlock(groups[i].comments[j]));
+      blocks.push(commentBlock(groups[i].comments[j]!, ++index));
     }
   }
-  return header + blocks.join("\n\n") + "\n";
+  return `${header}${blocks.join("\n\n")}\n`;
 }

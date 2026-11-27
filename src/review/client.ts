@@ -11,6 +11,7 @@ import {
   lineOffsets,
   lineRangeFromOffsets,
   makeQuoteAnchor,
+  mapToSourceLines,
   parseState,
   removeComment,
   serializeState,
@@ -125,6 +126,11 @@ function locationLabel(comment: ReviewComment): string {
   const anchor = comment.anchor;
   if (anchor.kind === "lines") {
     return anchor.start === anchor.end ? `:${anchor.start}` : `:${anchor.start}-${anchor.end}`;
+  }
+  if (anchor.lines) {
+    return anchor.lines.start === anchor.lines.end
+      ? `L${anchor.lines.start}`
+      : `L${anchor.lines.start}-${anchor.lines.end}`;
   }
   return "quote";
 }
@@ -250,6 +256,10 @@ function initReview(): void {
     } catch {
       return location.pathname;
     }
+  }
+
+  function rootPath(): string {
+    return document.body.dataset.servRoot ?? "";
   }
 
   function isMarkdownPage(): boolean {
@@ -378,8 +388,8 @@ function initReview(): void {
     totalEl!.textContent = String(total);
     badge!.textContent = String(total);
     badge!.hidden = total === 0;
-    toggleBtn!.title = total > 0 ? `Review comments (${total})` : "Review comments";
-    toggleBtn!.setAttribute("aria-label", total > 0 ? `Review comments (${total})` : "Review comments");
+    toggleBtn!.title = total > 0 ? `Comments (${total})` : "Comments";
+    toggleBtn!.setAttribute("aria-label", total > 0 ? `Comments (${total})` : "Comments");
     clearBtn!.disabled = total === 0;
   }
 
@@ -609,7 +619,20 @@ function initReview(): void {
       const lines = lineRangeFromOffsets(text, start, end);
       return { kind: "lines", start: lines.start, end: lines.end, quote };
     }
-    return makeQuoteAnchor(text, start, end);
+    const anchor = makeQuoteAnchor(text, start, end);
+    // The rendered selection has no Markdown syntax; map it back onto the raw
+    // source so exports can carry real line numbers and a greppable excerpt.
+    const source = sourceCode()?.textContent;
+    if (source) {
+      const hint = text.length > 0 ? Math.floor((start / text.length) * source.length) : undefined;
+      const lines = mapToSourceLines(source, quote, hint);
+      if (lines) {
+        anchor.lines = lines;
+        const span = lineOffsets(source, lines.start, lines.end);
+        anchor.excerpt = source.slice(span.start, span.end);
+      }
+    }
+    return anchor;
   }
 
   /** Selection changes are frequent; only the rect and a cheap containment test. */
@@ -737,16 +760,17 @@ function initReview(): void {
   }
 
   copyBtn.addEventListener("click", () => {
-    void copyText(toMarkdown(state, today())).then((ok) => {
+    const root = rootPath();
+    void copyText(toMarkdown(state, today(), root === "" ? undefined : root)).then((ok) => {
       copyBtn.textContent = ok ? "Copied" : "Copy failed";
       window.setTimeout(() => {
-        copyBtn.textContent = "Copy review";
+        copyBtn.textContent = "Copy comments";
       }, 1200);
     });
   });
 
   clearBtn.addEventListener("click", () => {
-    if (!confirm("Clear all review comments?")) return;
+    if (!confirm("Clear all comments?")) return;
     state = emptyState();
     missing.clear();
     writeState();

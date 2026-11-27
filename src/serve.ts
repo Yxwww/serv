@@ -452,6 +452,7 @@ async function route(
           tags,
           view,
           showAll,
+          root,
         }),
       );
     }
@@ -474,6 +475,7 @@ async function route(
           sidebar: await sidebarFor(root, target.rel, false),
           truncated: truncated ? SOURCE_LIMIT : undefined,
           view,
+          root,
         }),
         200,
         VARY_DEST,
@@ -492,6 +494,7 @@ async function route(
           sidebar: await sidebarFor(root, target.rel, false),
           truncated: truncated ? SOURCE_LIMIT : undefined,
           codeHtml,
+          root,
         }),
         200,
         VARY_DEST,
@@ -532,6 +535,7 @@ async function route(
         truncated: truncated ? SOURCE_LIMIT : undefined,
         rawBlank: true,
         codeHtml: parseFailed ? undefined : await highlightSource(code, ext),
+        root,
       });
     } else if (IMAGE_EXTS.has(ext)) {
       let nav: ImageNav = {};

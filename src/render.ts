@@ -229,13 +229,13 @@ const MD_SCRIPT = `
 `;
 
 /** Review comment bar; the client fills the list and drives the open state. */
-const REVIEW_TOGGLE = `<button type="button" id="serv-review-toggle" class="review-toggle" title="Review comments" aria-label="Review comments" aria-controls="serv-review-bar" aria-expanded="false">${messageIcon()}<span class="review-badge" data-review-badge hidden>0</span></button>`;
+const REVIEW_TOGGLE = `<button type="button" id="serv-review-toggle" class="review-toggle" title="Comments" aria-label="Comments" aria-controls="serv-review-bar" aria-expanded="false">${messageIcon()}<span class="review-badge" data-review-badge hidden>0</span></button>`;
 
-const REVIEW_BAR = `<aside class="review-bar" id="serv-review-bar" aria-label="Review comments">
+const REVIEW_BAR = `<aside class="review-bar" id="serv-review-bar" aria-label="Comments">
 <div class="review-head">
 <h2 class="review-title">Comments <span class="review-total" data-review-total>0</span></h2>
-<div class="review-actions"><button type="button" class="review-action" data-review-copy>Copy review</button><button type="button" class="review-action" data-review-clear>Clear</button></div>
-<button type="button" class="review-close" data-review-close title="Close review comments" aria-label="Close review comments">${closeIcon()}</button>
+<div class="review-actions"><button type="button" class="review-action" data-review-copy>Copy comments</button><button type="button" class="review-action" data-review-clear>Clear</button></div>
+<button type="button" class="review-close" data-review-close title="Close comments" aria-label="Close comments">${closeIcon()}</button>
 </div>
 <div class="review-list" data-review-list></div>
 </aside>
@@ -336,8 +336,10 @@ function pageShell(opts: {
   headerTools?: string;
   htmlClass?: string;
   review?: boolean; // pages where the comment bar is injected
+  root?: string; // absolute served root, written into review pages
 }): string {
   const review = opts.review === true;
+  const rootAttr = review && opts.root ? ` data-serv-root="${escapeHtml(opts.root)}"` : "";
   let trail = "";
   opts.crumbs.forEach((c, i) => {
     const last = i === opts.crumbs.length - 1;
@@ -377,7 +379,7 @@ ${opts.sidebar ? `<noscript><style>@media (max-width: 799.98px) {
   .nav-btn, .nav-close, .nav-backdrop { display: none; }
 }</style></noscript>` : ""}
 </head>
-<body class="min-h-dvh bg-body text-primary${review ? " serv-review-page" : ""}">
+<body class="min-h-dvh bg-body text-primary${review ? " serv-review-page" : ""}"${rootAttr}>
 <div class="app">
 ${sidebar}
 <div class="flex min-h-dvh min-w-0 flex-col">
@@ -432,6 +434,7 @@ export function renderMarkdownPage(opts: {
   sidebar?: string;
   truncated?: number; // shown bytes; omitted when the whole file fits
   view?: MarkdownView;
+  root?: string;
 }): string {
   const rawHref = rawHrefFor(opts.rel);
   const view: MarkdownView = opts.view ?? "rendered";
@@ -450,6 +453,7 @@ export function renderMarkdownPage(opts: {
     htmlClass: `serv-md-page serv-md-${view}`,
     bodyScript: MD_SCRIPT,
     review: true,
+    root: opts.root,
   });
 }
 
@@ -466,6 +470,7 @@ export function renderSourcePage(opts: {
   truncated?: number; // shown bytes; omitted when the whole file fits
   rawBlank?: boolean;
   codeHtml?: string; // pre-highlighted <code> contents; plain when absent
+  root?: string;
 }): string {
   const rawHref = rawHrefFor(opts.rel);
   const notice = opts.truncated ? truncationNotice(opts.truncated, rawHref) : "";
@@ -477,6 +482,7 @@ export function renderSourcePage(opts: {
     rawBlank: opts.rawBlank,
     sidebar: opts.sidebar,
     review: true,
+    root: opts.root,
   });
 }
 
@@ -621,6 +627,7 @@ export function renderListing(opts: {
   sidebar?: string;
   view?: View;
   showAll?: boolean;
+  root?: string;
 }): string {
   const activeView: View = opts.view ?? "grid";
   const showAll = opts.showAll === true;
@@ -701,6 +708,7 @@ ${cards}
     sidebar: opts.sidebar,
     bodyScript: opts.entries.length ? LISTING_SCRIPT : undefined,
     review: true,
+    root: opts.root,
   });
 }
 

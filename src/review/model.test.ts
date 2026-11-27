@@ -9,6 +9,7 @@ import {
   lineOffsets,
   lineRangeFromOffsets,
   makeQuoteAnchor,
+  mapToSourceLines,
   parseState,
   removeComment,
   serializeState,
@@ -65,8 +66,54 @@ describe("parseState", () => {
     const original = state(
       comment("a", "/a.ts", lineAnchor(3, 3), "hi", 1),
       comment("b", "/b.md", quoteAnchor("q", "pre", "suf"), "", 2),
+      comment(
+        "c",
+        "/c.md",
+        {
+          kind: "quote",
+          quote: "q",
+          prefix: "pre",
+          suffix: "suf",
+          lines: { start: 4, end: 6 },
+          excerpt: "| a | b |",
+        },
+        "",
+        3,
+      ),
     );
     expect(parseState(serializeState(original))).toEqual(original);
+  });
+
+  test("accepts optional source lines and excerpt, rejecting malformed values", () => {
+    const withMeta: QuoteAnchor = {
+      kind: "quote",
+      quote: "q",
+      prefix: "p",
+      suffix: "s",
+      lines: { start: 2, end: 4 },
+      excerpt: "| a |\n| b |",
+    };
+    const raw = JSON.stringify({
+      v: 1,
+      comments: [
+        comment("good", "/a.md", withMeta, "body", 1),
+        {
+          id: "bad-lines",
+          path: "/a.md",
+          anchor: { kind: "quote", quote: "q", prefix: "", suffix: "", lines: { start: 0, end: 1 } },
+          body: "",
+          created: 1,
+        },
+        {
+          id: "bad-excerpt",
+          path: "/a.md",
+          anchor: { kind: "quote", quote: "q", prefix: "", suffix: "", excerpt: 3 },
+          body: "",
+          created: 1,
+        },
+      ],
+    });
+    expect(parseState(raw)).toEqual({ v: 1, comments: [comment("good", "/a.md", withMeta, "body", 1)] });
   });
 });
 
@@ -155,6 +202,35 @@ describe("lineOffsets", () => {
   });
 });
 
+describe("mapToSourceLines", () => {
+  test("maps table cells, emphasis, code and link text to source lines", () => {
+    const table = "| id | status |\n| --- | --- |\n| 1 | todo |\n| 2 | done |";
+    expect(mapToSourceLines(table, "idstatus")).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceLines(table, "1todo")).toEqual({ start: 3, end: 3 });
+    expect(mapToSourceLines(table, "2done")).toEqual({ start: 4, end: 4 });
+
+    const prose = "This is **bold** and `code` with a [link](https://example.com/a_b).";
+    expect(mapToSourceLines(prose, "bold")).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceLines(prose, "code")).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceLines(prose, "link")).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceLines(prose, "This is bold and code with a link.")).toEqual({ start: 1, end: 1 });
+  });
+
+  test("maps headings and returns null when nothing matches", () => {
+    const md = "## Requirements\n\nBun **1.3.8 or newer**.";
+    expect(mapToSourceLines(md, "Requirements")).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceLines(md, "Bun 1.3.8 or newer")).toEqual({ start: 3, end: 3 });
+    expect(mapToSourceLines(md, "absent")).toBeNull();
+    expect(mapToSourceLines(md, "")).toBeNull();
+  });
+
+  test("uses the hint to disambiguate repeated text", () => {
+    const text = "target alpha\ntarget beta";
+    expect(mapToSourceLines(text, "target")).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceLines(text, "target", 13)).toEqual({ start: 2, end: 2 });
+  });
+});
+
 describe("findQuote", () => {
   test("picks the occurrence whose context matches, falling back to the first", () => {
     const text = "one target two\nxxx target yyy\n";
@@ -180,7 +256,7 @@ describe("findQuote", () => {
 });
 
 describe("toMarkdown", () => {
-  test("renders a full report in groupByPath order", () => {
+  test("renders numbered file:line entries in groupByPath order with a root", () => {
     const s = state(
       comment(
         "1",
@@ -191,32 +267,70 @@ describe("toMarkdown", () => {
       ),
       comment("2", "/docs/plan.md", quoteAnchor("we'll migrate in Q3"), "Is this still true?", 2),
     );
+    expect(toMarkdown(s, "2026-11-27", "/home/u/proj")).toBe(
+      "# Comments — 2026-11-27\n" +
+        "Root: /home/u/proj\n\n" +
+        "### 1. docs/plan.md (no line match)\n> we'll migrate in Q3\n\n" +
+        "**Comment:** Is this still true?\n\n" +
+        "### 2. src/render.ts:401-405\n> line one of quote\n> line two\n\n" +
+        "**Comment:** This allocates per render; cache it.\n",
+    );
+  });
+
+  test("uses the raw excerpt and source lines for preview comments", () => {
+    const anchor: QuoteAnchor = {
+      kind: "quote",
+      quote: "idstatus1todo",
+      prefix: "",
+      suffix: "",
+      lines: { start: 2, end: 4 },
+      excerpt: "| id | status |\n| --- | --- |\n| 1 | todo |",
+    };
+    const s = state(comment("1", "/views/PLAN.md", anchor, "Looks right.", 1));
     expect(toMarkdown(s, "2026-11-27")).toBe(
-      "# Review — 2026-11-27\n\n" +
-        "## docs/plan.md\n> we'll migrate in Q3\n\nIs this still true?\n\n" +
-        "## src/render.ts:401-405\n> line one of quote\n> line two\n\nThis allocates per render; cache it.\n",
+      "# Comments — 2026-11-27\n\n" +
+        "### 1. views/PLAN.md:2-4\n> | id | status |\n> | --- | --- |\n> | 1 | todo |\n\n" +
+        "**Comment:** Looks right.\n",
     );
   });
 
-  test("truncates after 20 quote lines, adds an ellipsis, and trims trailing whitespace", () => {
-    const lines: string[] = [];
-    for (let i = 1; i <= 23; i++) lines.push(`line ${i}`);
-    const s = state(comment("1", "/big.txt", lineAnchor(1, 1, lines.join("\n") + "\n\n  "), "body", 1));
+  test("shows six quote lines whole and condenses seven", () => {
+    const six = ["one", "two", "three", "four", "five", "six"].join("\n");
+    const seven = ["one", "two", "three", "four", "five", "six", "seven"].join("\n");
+    expect(toMarkdown(state(comment("1", "/a.txt", lineAnchor(1, 1, six), "body", 1)), "2026-01-02")).toBe(
+      "# Comments — 2026-01-02\n\n" +
+        "### 1. a.txt:1\n> one\n> two\n> three\n> four\n> five\n> six\n\n" +
+        "**Comment:** body\n",
+    );
+    expect(toMarkdown(state(comment("1", "/a.txt", lineAnchor(1, 1, seven), "body", 1)), "2026-01-02")).toBe(
+      "# Comments — 2026-01-02\n\n" +
+        "### 1. a.txt:1\n> one\n> two\n> …\n> six\n> seven\n\n" +
+        "**Comment:** body\n",
+    );
+  });
 
-    const expected: string[] = [];
-    for (let i = 1; i <= 20; i++) expected.push(`> line ${i}`);
-    expected.push("> …");
+  test("blank quote lines become a bare marker and trailing whitespace is trimmed", () => {
+    const s = state(comment("1", "/a.txt", quoteAnchor("a  \n\nb\n"), "note", 1));
     expect(toMarkdown(s, "2026-01-02")).toBe(
-      "# Review — 2026-01-02\n\n## big.txt:1\n" + expected.join("\n") + "\n\nbody\n",
+      "# Comments — 2026-01-02\n\n" +
+        "### 1. a.txt (no line match)\n> a\n>\n> b\n\n" +
+        "**Comment:** note\n",
     );
   });
 
-  test("blank quote lines become a bare marker", () => {
-    const s = state(comment("1", "/a.txt", quoteAnchor("a\n\nb"), "note", 1));
-    expect(toMarkdown(s, "2026-01-02")).toBe("# Review — 2026-01-02\n\n## a.txt\n> a\n>\n> b\n\nnote\n");
+  test("keeps multi-line bodies verbatim", () => {
+    const s = state(comment("1", "/a.txt", lineAnchor(2, 2, "x"), "first\nsecond", 1));
+    expect(toMarkdown(s, "2026-01-02")).toBe(
+      "# Comments — 2026-01-02\n\n" +
+        "### 1. a.txt:2\n> x\n\n" +
+        "**Comment:** first\nsecond\n",
+    );
   });
 
-  test("renders an empty state", () => {
-    expect(toMarkdown(emptyState(), "2026-11-27")).toBe("# Review — 2026-11-27\n\n_No comments._\n");
+  test("renders an empty state with and without a root", () => {
+    expect(toMarkdown(emptyState(), "2026-11-27")).toBe("# Comments — 2026-11-27\n\n_No comments._\n");
+    expect(toMarkdown(emptyState(), "2026-11-27", "/tmp/x")).toBe(
+      "# Comments — 2026-11-27\nRoot: /tmp/x\n\n_No comments._\n",
+    );
   });
 });
