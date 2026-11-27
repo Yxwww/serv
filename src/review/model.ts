@@ -2,7 +2,14 @@
 
 export const STORAGE_KEY = "serv:review";
 
-export type LineAnchor = { kind: "lines"; start: number; end: number; quote: string };
+export type LineAnchor = {
+  kind: "lines";
+  start: number;
+  end: number;
+  quote: string;
+  /** Full raw lines start..end; absent on old entries. */
+  excerpt?: string;
+};
 export type QuoteAnchor = {
   kind: "quote";
   quote: string;
@@ -43,7 +50,17 @@ function parseAnchor(value: unknown): Anchor | null {
     if (typeof value.start !== "number" || !Number.isInteger(value.start)) return null;
     if (typeof value.end !== "number" || !Number.isInteger(value.end)) return null;
     if (value.start < 1 || value.end < value.start) return null;
-    return { kind: "lines", start: value.start, end: value.end, quote: value.quote };
+    const anchor: LineAnchor = {
+      kind: "lines",
+      start: value.start,
+      end: value.end,
+      quote: value.quote,
+    };
+    if (value.excerpt !== undefined) {
+      if (typeof value.excerpt !== "string") return null;
+      anchor.excerpt = value.excerpt;
+    }
+    return anchor;
   }
   if (value.kind === "quote") {
     if (typeof value.quote !== "string") return null;
@@ -106,7 +123,14 @@ export function serializeState(s: ReviewState): string {
 
 function cloneAnchor(anchor: Anchor): Anchor {
   if (anchor.kind === "lines") {
-    return { kind: "lines", start: anchor.start, end: anchor.end, quote: anchor.quote };
+    const copy: LineAnchor = {
+      kind: "lines",
+      start: anchor.start,
+      end: anchor.end,
+      quote: anchor.quote,
+    };
+    if (anchor.excerpt !== undefined) copy.excerpt = anchor.excerpt;
+    return copy;
   }
   const copy: QuoteAnchor = {
     kind: "quote",
@@ -175,14 +199,31 @@ export function findComment(s: ReviewState, id: string): ReviewComment | undefin
   return undefined;
 }
 
+/** First source line behind a comment, or undefined for an unlocatable quote. */
+function startLine(comment: ReviewComment): number | undefined {
+  if (comment.anchor.kind === "lines") return comment.anchor.start;
+  return comment.anchor.lines?.start;
+}
+
+function endLine(comment: ReviewComment): number {
+  if (comment.anchor.kind === "lines") return comment.anchor.end;
+  return comment.anchor.lines?.end ?? 0;
+}
+
+/** Line order across anchor kinds; quotes without source lines go last. */
 function compareComments(a: ReviewComment, b: ReviewComment): number {
-  if (a.anchor.kind === "lines") {
-    if (b.anchor.kind !== "lines") return -1;
-    if (a.anchor.start !== b.anchor.start) return a.anchor.start - b.anchor.start;
-    if (a.anchor.end !== b.anchor.end) return a.anchor.end - b.anchor.end;
-    return a.created - b.created;
+  const aStart = startLine(a);
+  const bStart = startLine(b);
+  if (aStart === undefined || bStart === undefined) {
+    if (aStart !== undefined) return -1;
+    if (bStart !== undefined) return 1;
+    if (a.created !== b.created) return a.created - b.created;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   }
-  if (b.anchor.kind === "lines") return 1;
+  if (aStart !== bStart) return aStart - bStart;
+  const aEnd = endLine(a);
+  const bEnd = endLine(b);
+  if (aEnd !== bEnd) return aEnd - bEnd;
   if (a.created !== b.created) return a.created - b.created;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
@@ -474,7 +515,8 @@ export function findQuote(text: string, a: QuoteAnchor): { start: number; end: n
   return bestStart === -1 ? null : { start: bestStart, end: bestStart + quote.length };
 }
 
-const MAX_QUOTE_LINES = 6;
+const MAX_QUOTE_LINES = 40;
+const MAX_SELECTED_CHARS = 200;
 
 function displayPath(path: string): string {
   return path.charCodeAt(0) === 47 ? path.slice(1) : path;
@@ -483,13 +525,15 @@ function displayPath(path: string): string {
 function quoteMarkdown(quote: string): string {
   const lines = quote.replace(/\s+$/, "").split("\n");
   for (let i = 0; i < lines.length; i++) lines[i] = lines[i]!.replace(/\s+$/, "");
-  let shown = lines;
-  if (lines.length > MAX_QUOTE_LINES) {
-    shown = [lines[0]!, lines[1]!, "…", lines[lines.length - 2]!, lines[lines.length - 1]!];
-  }
+  const limit = lines.length > MAX_QUOTE_LINES ? MAX_QUOTE_LINES : lines.length;
   const out: string[] = [];
-  for (let i = 0; i < shown.length; i++) out.push(shown[i] === "" ? ">" : "> " + shown[i]);
+  for (let i = 0; i < limit; i++) out.push(lines[i] === "" ? ">" : "> " + lines[i]);
+  if (lines.length > MAX_QUOTE_LINES) out.push(`> … (${lines.length - MAX_QUOTE_LINES} more lines)`);
   return out.join("\n");
+}
+
+function collapse(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function commentBlock(comment: ReviewComment, index: number): string {
@@ -501,13 +545,18 @@ function commentBlock(comment: ReviewComment, index: number): string {
     location =
       lines.start === lines.end ? `${path}:${lines.start}` : `${path}:${lines.start}-${lines.end}`;
   }
+  // Prefer the full source lines; old entries only have the selected text.
   const quote =
-    anchor.kind === "lines"
-      ? anchor.quote
-      : anchor.excerpt !== undefined && anchor.excerpt !== ""
-        ? anchor.excerpt
-        : anchor.quote;
-  return `### ${index}. ${location}\n${quoteMarkdown(quote)}\n\n**Comment:** ${comment.body}`;
+    anchor.excerpt !== undefined && anchor.excerpt !== "" ? anchor.excerpt : anchor.quote;
+  const selected = collapse(anchor.quote);
+  let selectedLine = "";
+  if (selected !== "" && selected !== collapse(quote)) {
+    const shown = selected.length > MAX_SELECTED_CHARS
+      ? selected.slice(0, MAX_SELECTED_CHARS) + "…"
+      : selected;
+    selectedLine = `\nSelected: "${shown}"`;
+  }
+  return `### ${index}. ${location}\n${quoteMarkdown(quote)}${selectedLine}\n\n**Comment:** ${comment.body}`;
 }
 
 export function toMarkdown(s: ReviewState, date: string, root?: string): string {

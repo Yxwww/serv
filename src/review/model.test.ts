@@ -84,6 +84,14 @@ describe("parseState", () => {
     expect(parseState(serializeState(original))).toEqual(original);
   });
 
+  test("keeps old line and quote anchors without excerpts", () => {
+    const comments = [
+      comment("line", "/a.ts", lineAnchor(1, 2, "x"), "", 1),
+      comment("quote", "/a.md", quoteAnchor("q", "p", "s"), "", 2),
+    ];
+    expect(parseState(JSON.stringify({ v: 1, comments }))).toEqual({ v: 1, comments });
+  });
+
   test("accepts optional source lines and excerpt, rejecting malformed values", () => {
     const withMeta: QuoteAnchor = {
       kind: "quote",
@@ -108,6 +116,13 @@ describe("parseState", () => {
           id: "bad-excerpt",
           path: "/a.md",
           anchor: { kind: "quote", quote: "q", prefix: "", suffix: "", excerpt: 3 },
+          body: "",
+          created: 1,
+        },
+        {
+          id: "bad-line-excerpt",
+          path: "/a.ts",
+          anchor: { kind: "lines", start: 1, end: 1, quote: "x", excerpt: 3 },
           body: "",
           created: 1,
         },
@@ -163,6 +178,31 @@ describe("groupByPath", () => {
 
     expect(groupByPath(s, "/b.md").map((group) => group.path)).toEqual(["/b.md", "/a.md"]);
     expect(groupByPath(s, "/missing").map((group) => group.path)).toEqual(["/a.md", "/b.md"]);
+  });
+
+  test("orders mixed anchor kinds by start line, unlocatable quotes last", () => {
+    const s = state(
+      comment("quote-none", "/a.md", quoteAnchor("q"), "", 1),
+      comment("line-12", "/a.md", lineAnchor(12, 12), "", 2),
+      comment(
+        "quote-5",
+        "/a.md",
+        { kind: "quote", quote: "q", prefix: "", suffix: "", lines: { start: 5, end: 5 } },
+        "",
+        3,
+      ),
+      comment("line-3", "/a.md", lineAnchor(3, 4), "", 4),
+      comment(
+        "quote-12",
+        "/a.md",
+        { kind: "quote", quote: "q", prefix: "", suffix: "", lines: { start: 12, end: 14 } },
+        "",
+        5,
+      ),
+    );
+    const order = ["line-3", "quote-5", "line-12", "quote-12", "quote-none"];
+    expect(groupByPath(s).map((group) => group.comments.map((c) => c.id))).toEqual([order]);
+    expect(groupByPath(s, "/a.md")[0]!.comments.map((c) => c.id)).toEqual(order);
   });
 });
 
@@ -289,23 +329,69 @@ describe("toMarkdown", () => {
     const s = state(comment("1", "/views/PLAN.md", anchor, "Looks right.", 1));
     expect(toMarkdown(s, "2026-11-27")).toBe(
       "# Comments — 2026-11-27\n\n" +
-        "### 1. views/PLAN.md:2-4\n> | id | status |\n> | --- | --- |\n> | 1 | todo |\n\n" +
+        "### 1. views/PLAN.md:2-4\n> | id | status |\n> | --- | --- |\n> | 1 | todo |\n" +
+        'Selected: "idstatus1todo"\n\n' +
         "**Comment:** Looks right.\n",
     );
   });
 
-  test("shows six quote lines whole and condenses seven", () => {
-    const six = ["one", "two", "three", "four", "five", "six"].join("\n");
-    const seven = ["one", "two", "three", "four", "five", "six", "seven"].join("\n");
-    expect(toMarkdown(state(comment("1", "/a.txt", lineAnchor(1, 1, six), "body", 1)), "2026-01-02")).toBe(
+  test("shows the full source line and a partial selection", () => {
+    const anchor: LineAnchor = {
+      kind: "lines",
+      start: 12,
+      end: 12,
+      quote: "build + health in one step",
+      excerpt:
+        "- `bun run tools/refresh.ts` — build + health in one step (--watch: reruns on data/ and venues/l2/ changes)",
+    };
+    const s = state(comment("1", "/README.md", anchor, "note", 1));
+    expect(toMarkdown(s, "2026-11-27")).toBe(
+      "# Comments — 2026-11-27\n\n" +
+        "### 1. README.md:12\n" +
+        "> - `bun run tools/refresh.ts` — build + health in one step (--watch: reruns on data/ and venues/l2/ changes)\n" +
+        'Selected: "build + health in one step"\n\n' +
+        "**Comment:** note\n",
+    );
+  });
+
+  test("omits Selected when it matches the quoted lines", () => {
+    const anchor: LineAnchor = {
+      kind: "lines",
+      start: 3,
+      end: 3,
+      quote: "const a = 1;",
+      excerpt: "const a = 1;",
+    };
+    const s = state(comment("1", "/a.ts", anchor, "body", 1));
+    expect(toMarkdown(s, "2026-01-02")).toBe(
       "# Comments — 2026-01-02\n\n" +
-        "### 1. a.txt:1\n> one\n> two\n> three\n> four\n> five\n> six\n\n" +
+        "### 1. a.ts:3\n> const a = 1;\n\n" +
         "**Comment:** body\n",
     );
-    expect(toMarkdown(state(comment("1", "/a.txt", lineAnchor(1, 1, seven), "body", 1)), "2026-01-02")).toBe(
-      "# Comments — 2026-01-02\n\n" +
-        "### 1. a.txt:1\n> one\n> two\n> …\n> six\n> seven\n\n" +
-        "**Comment:** body\n",
+  });
+
+  test("caps Selected at 200 characters", () => {
+    const long = "x".repeat(250);
+    const anchor: LineAnchor = {
+      kind: "lines",
+      start: 1,
+      end: 1,
+      quote: long,
+      excerpt: `prefix ${long}`,
+    };
+    const s = state(comment("1", "/a.txt", anchor, "body", 1));
+    expect(toMarkdown(s, "2026-01-02")).toContain(`Selected: "${"x".repeat(200)}…"`);
+  });
+
+  test("shows forty quote lines whole and caps the rest", () => {
+    const make = (count: number) =>
+      Array.from({ length: count }, (_, i) => `line ${i + 1}`).join("\n");
+    const forty = Array.from({ length: 40 }, (_, i) => `> line ${i + 1}`).join("\n");
+    expect(toMarkdown(state(comment("1", "/a.txt", lineAnchor(1, 1, make(40)), "body", 1)), "2026-01-02")).toBe(
+      `# Comments — 2026-01-02\n\n### 1. a.txt:1\n${forty}\n\n**Comment:** body\n`,
+    );
+    expect(toMarkdown(state(comment("1", "/a.txt", lineAnchor(1, 1, make(41)), "body", 1)), "2026-01-02")).toBe(
+      `# Comments — 2026-01-02\n\n### 1. a.txt:1\n${forty}\n> … (1 more lines)\n\n**Comment:** body\n`,
     );
   });
 

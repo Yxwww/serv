@@ -584,12 +584,29 @@ function initReview(): void {
   function positionAddButton(rect: DOMRect): void {
     const width = addButton.offsetWidth;
     const height = addButton.offsetHeight;
-    let left = rect.right - width;
-    if (left + width > window.innerWidth - 8) left = window.innerWidth - width - 8;
-    if (left < 8) left = 8;
-    let top = rect.bottom + 6;
-    if (top + height > window.innerHeight - 8) top = rect.top - height - 6;
-    if (top < 8) top = 8;
+    const maxLeft = Math.max(8, window.innerWidth - width - 8);
+    const maxTop = Math.max(8, window.innerHeight - height - 8);
+
+    // An off-screen selection pins the button to the nearest visible edge.
+    let left: number;
+    if (rect.right < 0) left = 8;
+    else if (rect.left > window.innerWidth) left = maxLeft;
+    else {
+      left = rect.right - width;
+      if (left < 8) left = 8;
+      if (left > maxLeft) left = maxLeft;
+    }
+
+    let top: number;
+    if (rect.bottom < 0) top = 8;
+    else if (rect.top > window.innerHeight) top = maxTop;
+    else {
+      top = rect.bottom + 6;
+      if (top > maxTop) top = rect.top - height - 6;
+      if (top < 8) top = 8;
+      if (top > maxTop) top = maxTop;
+    }
+
     addButton.style.left = `${left}px`;
     addButton.style.top = `${top}px`;
   }
@@ -597,12 +614,30 @@ function initReview(): void {
   function positionComposer(rect: DOMRect): void {
     const width = composer.offsetWidth;
     const height = composer.offsetHeight;
-    let left = rect.left;
-    if (left + width > window.innerWidth - 8) left = window.innerWidth - width - 8;
-    if (left < 8) left = 8;
-    let top = rect.bottom + 8;
-    if (top + height > window.innerHeight - 8) top = rect.top - height - 8;
-    if (top < 8) top = 8;
+    const maxLeft = Math.max(8, window.innerWidth - width - 8);
+    const maxTop = Math.max(8, window.innerHeight - height - 8);
+
+    // A pinned button can be opened while its selection is off-screen; keep
+    // the composer itself visible in that case too.
+    let left: number;
+    if (rect.right < 0) left = 8;
+    else if (rect.left > window.innerWidth) left = maxLeft;
+    else {
+      left = rect.left;
+      if (left < 8) left = 8;
+      if (left > maxLeft) left = maxLeft;
+    }
+
+    let top: number;
+    if (rect.bottom < 0) top = 8;
+    else if (rect.top > window.innerHeight) top = maxTop;
+    else {
+      top = rect.bottom + 8;
+      if (top > maxTop) top = rect.top - height - 8;
+      if (top < 8) top = 8;
+      if (top > maxTop) top = maxTop;
+    }
+
     composer.style.left = `${left}px`;
     composer.style.top = `${top}px`;
   }
@@ -617,7 +652,14 @@ function initReview(): void {
     if (quote.trim() === "") return null;
     if (target.kind === "source") {
       const lines = lineRangeFromOffsets(text, start, end);
-      return { kind: "lines", start: lines.start, end: lines.end, quote };
+      const span = lineOffsets(text, lines.start, lines.end);
+      return {
+        kind: "lines",
+        start: lines.start,
+        end: lines.end,
+        quote,
+        excerpt: text.slice(span.start, span.end),
+      };
     }
     const anchor = makeQuoteAnchor(text, start, end);
     // The rendered selection has no Markdown syntax; map it back onto the raw
@@ -815,12 +857,11 @@ function initReview(): void {
   });
 
   document.addEventListener("selectionchange", scheduleSelection);
-  window.addEventListener("scroll", () => {
-    if (composer.hidden) hideAddButton();
-  }, true);
-  window.addEventListener("resize", () => {
-    if (composer.hidden) hideAddButton();
-  });
+  const reposition = (): void => {
+    if (composer.hidden) scheduleSelection();
+  };
+  window.addEventListener("scroll", reposition, true);
+  window.addEventListener("resize", reposition);
 
   // Mode changes move the commentable region; refresh both highlights and the
   // floating button after the toggle's own handler has flipped the panels.
