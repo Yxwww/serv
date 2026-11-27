@@ -1079,6 +1079,18 @@ html.serv-md-source [data-md-panel="rendered"] {
   font: inherit;
 }
 
+/* Shiki dual themes: tokens carry --shiki-light / --shiki-dark only, so the
+   code keeps serv's surface background and follows prefers-color-scheme. */
+.source .code span {
+  color: var(--shiki-light);
+}
+
+@media (prefers-color-scheme: dark) {
+  .source .code span {
+    color: var(--shiki-dark);
+  }
+}
+
 .image-viewer {
   margin: 0;
 }
