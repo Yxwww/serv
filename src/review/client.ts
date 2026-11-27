@@ -11,7 +11,7 @@ import {
   lineOffsets,
   lineRangeFromOffsets,
   makeQuoteAnchor,
-  mapToSourceLines,
+  mapToSourceRange,
   parseState,
   removeComment,
   serializeState,
@@ -124,15 +124,9 @@ function quoteExcerpt(quote: string): string {
 
 function locationLabel(comment: ReviewComment): string {
   const anchor = comment.anchor;
-  if (anchor.kind === "lines") {
-    return anchor.start === anchor.end ? `:${anchor.start}` : `:${anchor.start}-${anchor.end}`;
-  }
-  if (anchor.lines) {
-    return anchor.lines.start === anchor.lines.end
-      ? `L${anchor.lines.start}`
-      : `L${anchor.lines.start}-${anchor.lines.end}`;
-  }
-  return "quote";
+  const lines = anchor.kind === "lines" ? anchor : anchor.lines;
+  if (!lines) return "quote";
+  return lines.start === lines.end ? `L${lines.start}` : `L${lines.start}-${lines.end}`;
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -659,6 +653,7 @@ function initReview(): void {
         end: lines.end,
         quote,
         excerpt: text.slice(span.start, span.end),
+        selected: quote,
       };
     }
     const anchor = makeQuoteAnchor(text, start, end);
@@ -667,11 +662,12 @@ function initReview(): void {
     const source = sourceCode()?.textContent;
     if (source) {
       const hint = text.length > 0 ? Math.floor((start / text.length) * source.length) : undefined;
-      const lines = mapToSourceLines(source, quote, hint);
-      if (lines) {
-        anchor.lines = lines;
-        const span = lineOffsets(source, lines.start, lines.end);
+      const mapped = mapToSourceRange(source, quote, hint);
+      if (mapped) {
+        anchor.lines = mapped.lines;
+        const span = lineOffsets(source, mapped.lines.start, mapped.lines.end);
         anchor.excerpt = source.slice(span.start, span.end);
+        anchor.selected = source.slice(mapped.start, mapped.end);
       }
     }
     return anchor;

@@ -10,6 +10,7 @@ import {
   lineRangeFromOffsets,
   makeQuoteAnchor,
   mapToSourceLines,
+  mapToSourceRange,
   parseState,
   removeComment,
   serializeState,
@@ -76,6 +77,7 @@ describe("parseState", () => {
           suffix: "suf",
           lines: { start: 4, end: 6 },
           excerpt: "| a | b |",
+          selected: "a",
         },
         "",
         3,
@@ -100,6 +102,7 @@ describe("parseState", () => {
       suffix: "s",
       lines: { start: 2, end: 4 },
       excerpt: "| a |\n| b |",
+      selected: "a",
     };
     const raw = JSON.stringify({
       v: 1,
@@ -123,6 +126,13 @@ describe("parseState", () => {
           id: "bad-line-excerpt",
           path: "/a.ts",
           anchor: { kind: "lines", start: 1, end: 1, quote: "x", excerpt: 3 },
+          body: "",
+          created: 1,
+        },
+        {
+          id: "bad-selected",
+          path: "/a.md",
+          anchor: { kind: "quote", quote: "q", prefix: "", suffix: "", selected: 3 },
           body: "",
           created: 1,
         },
@@ -269,6 +279,13 @@ describe("mapToSourceLines", () => {
     expect(mapToSourceLines(text, "target")).toEqual({ start: 1, end: 1 });
     expect(mapToSourceLines(text, "target", 13)).toEqual({ start: 2, end: 2 });
   });
+
+  test("mapToSourceRange exposes the raw source slice", () => {
+    const table = "| id | status |\n| --- | --- |\n| 1 | todo |";
+    const range = mapToSourceRange(table, "1todo");
+    expect(range!.lines).toEqual({ start: 3, end: 3 });
+    expect(table.slice(range!.start, range!.end)).toBe("1 | todo");
+  });
 });
 
 describe("findQuote", () => {
@@ -317,7 +334,7 @@ describe("toMarkdown", () => {
     );
   });
 
-  test("uses the raw excerpt and source lines for preview comments", () => {
+  test("old preview entries without selected omit the Selected line", () => {
     const anchor: QuoteAnchor = {
       kind: "quote",
       quote: "idstatus1todo",
@@ -329,9 +346,109 @@ describe("toMarkdown", () => {
     const s = state(comment("1", "/views/PLAN.md", anchor, "Looks right.", 1));
     expect(toMarkdown(s, "2026-11-27")).toBe(
       "# Comments — 2026-11-27\n\n" +
-        "### 1. views/PLAN.md:2-4\n> | id | status |\n> | --- | --- |\n> | 1 | todo |\n" +
-        'Selected: "idstatus1todo"\n\n' +
+        "### 1. views/PLAN.md:2-4\n> | id | status |\n> | --- | --- |\n> | 1 | todo |\n\n" +
         "**Comment:** Looks right.\n",
+    );
+  });
+
+  test("old source entries fall back to quote for Selected", () => {
+    const anchor: LineAnchor = {
+      kind: "lines",
+      start: 2,
+      end: 2,
+      quote: "todo",
+      excerpt: "- Status: **todo**",
+    };
+    const s = state(comment("1", "/a.md", anchor, "note", 1));
+    expect(toMarkdown(s, "2026-11-27")).toBe(
+      "# Comments — 2026-11-27\n\n" +
+        "### 1. a.md:2\n> - Status: **todo**\n" +
+        'Selected: "todo"\n\n' +
+        "**Comment:** note\n",
+    );
+  });
+
+  test("omits Selected when the whole table range was selected", () => {
+    const source = "| id | status |\n| --- | --- |\n| 1 | todo |";
+    const range = mapToSourceRange(source, "idstatus1todo")!;
+    const anchor: QuoteAnchor = {
+      kind: "quote",
+      quote: "idstatus1todo",
+      prefix: "",
+      suffix: "",
+      lines: range.lines,
+      excerpt: source,
+      selected: source.slice(range.start, range.end),
+    };
+    const s = state(comment("1", "/views/PLAN.md", anchor, "Looks right.", 1));
+    expect(toMarkdown(s, "2026-11-27")).toBe(
+      "# Comments — 2026-11-27\n\n" +
+        "### 1. views/PLAN.md:1-3\n> | id | status |\n> | --- | --- |\n> | 1 | todo |\n\n" +
+        "**Comment:** Looks right.\n",
+    );
+  });
+
+  test("omits Selected for full table rows with link destinations", () => {
+    const source =
+      "| id | tickets |\n| --- | --- |\n| a | [SDK-1](https://x/1); [SDK-2](https://x/2) |";
+    const range = mapToSourceRange(source, "idticketsaSDK-1; SDK-2")!;
+    const anchor: QuoteAnchor = {
+      kind: "quote",
+      quote: "idticketsaSDK-1; SDK-2",
+      prefix: "",
+      suffix: "",
+      lines: range.lines,
+      excerpt: source,
+      selected: source.slice(range.start, range.end),
+    };
+    const s = state(comment("1", "/views/PLAN.md", anchor, "note", 1));
+    expect(toMarkdown(s, "2026-11-27")).toBe(
+      "# Comments — 2026-11-27\n\n" +
+        "### 1. views/PLAN.md:1-3\n" +
+        "> | id | tickets |\n> | --- | --- |\n> | a | [SDK-1](https://x/1); [SDK-2](https://x/2) |\n\n" +
+        "**Comment:** note\n",
+    );
+  });
+
+  test("uses the raw source slice for a partial bold selection", () => {
+    const source = "| Status | **todo** |";
+    const range = mapToSourceRange(source, "todo")!;
+    const anchor: QuoteAnchor = {
+      kind: "quote",
+      quote: "todo",
+      prefix: "",
+      suffix: "",
+      lines: { start: 1, end: 1 },
+      excerpt: source,
+      selected: source.slice(range.start, range.end),
+    };
+    const s = state(comment("1", "/views/PLAN.md", anchor, "note", 1));
+    expect(toMarkdown(s, "2026-11-27")).toBe(
+      "# Comments — 2026-11-27\n\n" +
+        "### 1. views/PLAN.md:1\n> | Status | **todo** |\n" +
+        'Selected: "todo"\n\n' +
+        "**Comment:** note\n",
+    );
+  });
+
+  test("uses the raw source slice for a partial heading selection", () => {
+    const source = "## p0-quick-wins — L1 quick wins";
+    const range = mapToSourceRange(source, "L1 quick wins")!;
+    const anchor: QuoteAnchor = {
+      kind: "quote",
+      quote: "L1 quick wins",
+      prefix: "",
+      suffix: "",
+      lines: { start: 1, end: 1 },
+      excerpt: source,
+      selected: source.slice(range.start, range.end),
+    };
+    const s = state(comment("1", "/views/PLAN.md", anchor, "note", 1));
+    expect(toMarkdown(s, "2026-11-27")).toBe(
+      "# Comments — 2026-11-27\n\n" +
+        "### 1. views/PLAN.md:1\n> ## p0-quick-wins — L1 quick wins\n" +
+        'Selected: "L1 quick wins"\n\n' +
+        "**Comment:** note\n",
     );
   });
 
@@ -343,6 +460,7 @@ describe("toMarkdown", () => {
       quote: "build + health in one step",
       excerpt:
         "- `bun run tools/refresh.ts` — build + health in one step (--watch: reruns on data/ and venues/l2/ changes)",
+      selected: "build + health in one step",
     };
     const s = state(comment("1", "/README.md", anchor, "note", 1));
     expect(toMarkdown(s, "2026-11-27")).toBe(
@@ -361,6 +479,7 @@ describe("toMarkdown", () => {
       end: 3,
       quote: "const a = 1;",
       excerpt: "const a = 1;",
+      selected: "const a = 1;",
     };
     const s = state(comment("1", "/a.ts", anchor, "body", 1));
     expect(toMarkdown(s, "2026-01-02")).toBe(
@@ -378,6 +497,7 @@ describe("toMarkdown", () => {
       end: 1,
       quote: long,
       excerpt: `prefix ${long}`,
+      selected: long,
     };
     const s = state(comment("1", "/a.txt", anchor, "body", 1));
     expect(toMarkdown(s, "2026-01-02")).toContain(`Selected: "${"x".repeat(200)}…"`);

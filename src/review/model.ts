@@ -9,6 +9,8 @@ export type LineAnchor = {
   quote: string;
   /** Full raw lines start..end; absent on old entries. */
   excerpt?: string;
+  /** Raw selected text; absent on old entries. */
+  selected?: string;
 };
 export type QuoteAnchor = {
   kind: "quote";
@@ -19,6 +21,8 @@ export type QuoteAnchor = {
   lines?: { start: number; end: number };
   /** Raw Markdown for `lines`, so exports can be grepped in the source. */
   excerpt?: string;
+  /** Raw source slice the rendered selection maps to; absent on old entries. */
+  selected?: string;
 };
 export type Anchor = LineAnchor | QuoteAnchor;
 
@@ -60,6 +64,10 @@ function parseAnchor(value: unknown): Anchor | null {
       if (typeof value.excerpt !== "string") return null;
       anchor.excerpt = value.excerpt;
     }
+    if (value.selected !== undefined) {
+      if (typeof value.selected !== "string") return null;
+      anchor.selected = value.selected;
+    }
     return anchor;
   }
   if (value.kind === "quote") {
@@ -82,6 +90,10 @@ function parseAnchor(value: unknown): Anchor | null {
     if (value.excerpt !== undefined) {
       if (typeof value.excerpt !== "string") return null;
       anchor.excerpt = value.excerpt;
+    }
+    if (value.selected !== undefined) {
+      if (typeof value.selected !== "string") return null;
+      anchor.selected = value.selected;
     }
     return anchor;
   }
@@ -130,6 +142,7 @@ function cloneAnchor(anchor: Anchor): Anchor {
       quote: anchor.quote,
     };
     if (anchor.excerpt !== undefined) copy.excerpt = anchor.excerpt;
+    if (anchor.selected !== undefined) copy.selected = anchor.selected;
     return copy;
   }
   const copy: QuoteAnchor = {
@@ -140,6 +153,7 @@ function cloneAnchor(anchor: Anchor): Anchor {
   };
   if (anchor.lines !== undefined) copy.lines = { start: anchor.lines.start, end: anchor.lines.end };
   if (anchor.excerpt !== undefined) copy.excerpt = anchor.excerpt;
+  if (anchor.selected !== undefined) copy.selected = anchor.selected;
   return copy;
 }
 
@@ -378,11 +392,11 @@ function normalizeRendered(rendered: string): string {
  * is an approximate raw source offset; among equal normalized matches it picks
  * the nearest, which keeps repeated table cells on the right row.
  */
-export function mapToSourceLines(
+export function mapToSourceRange(
   source: string,
   rendered: string,
   hintOffset?: number,
-): { start: number; end: number } | null {
+): { start: number; end: number; lines: { start: number; end: number } } | null {
   const needle = normalizeRendered(rendered);
   if (needle === "") return null;
   const normalized = normalizeSource(source);
@@ -407,7 +421,17 @@ export function mapToSourceLines(
 
   const start = normalized.map[index]!;
   const end = normalized.map[index + needle.length - 1]! + 1;
-  return lineRangeFromOffsets(source, start, end);
+  return { start, end, lines: lineRangeFromOffsets(source, start, end) };
+}
+
+/** Line-range view of `mapToSourceRange`, kept for the existing callers. */
+export function mapToSourceLines(
+  source: string,
+  rendered: string,
+  hintOffset?: number,
+): { start: number; end: number } | null {
+  const range = mapToSourceRange(source, rendered, hintOffset);
+  return range ? range.lines : null;
 }
 
 /** 1-based inclusive lines to char offsets, end excluding the line's "\n". */
@@ -548,13 +572,28 @@ function commentBlock(comment: ReviewComment, index: number): string {
   // Prefer the full source lines; old entries only have the selected text.
   const quote =
     anchor.excerpt !== undefined && anchor.excerpt !== "" ? anchor.excerpt : anchor.quote;
-  const selected = collapse(anchor.quote);
+  // Line anchors predate `selected`; their quote is already raw source text.
+  const rawSelected =
+    anchor.selected !== undefined
+      ? anchor.selected
+      : anchor.kind === "lines"
+        ? anchor.quote
+        : undefined;
   let selectedLine = "";
-  if (selected !== "" && selected !== collapse(quote)) {
-    const shown = selected.length > MAX_SELECTED_CHARS
-      ? selected.slice(0, MAX_SELECTED_CHARS) + "…"
-      : selected;
-    selectedLine = `\nSelected: "${shown}"`;
+  if (rawSelected !== undefined) {
+    const selected = collapse(rawSelected);
+    // Both sides are raw Markdown here; strip link destinations and syntax so
+    // selecting a whole row matches its excerpt even when the slice ends mid-URL.
+    if (
+      selected !== "" &&
+      normalizeSource(rawSelected).text !== normalizeSource(quote).text
+    ) {
+      const shown =
+        selected.length > MAX_SELECTED_CHARS
+          ? selected.slice(0, MAX_SELECTED_CHARS) + "…"
+          : selected;
+      selectedLine = `\nSelected: "${shown}"`;
+    }
   }
   return `### ${index}. ${location}\n${quoteMarkdown(quote)}${selectedLine}\n\n**Comment:** ${comment.body}`;
 }
