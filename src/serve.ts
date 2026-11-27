@@ -424,7 +424,7 @@ async function route(
           rootLabel,
           rel: target.rel,
           entries,
-          indexHtml: indexFile,
+          hasIndexHtml: indexFile,
           readmeHtml: readmeText ? renderMarkdownHtml(readmeText.text) : undefined,
           readmeTruncated: readmeText?.truncated ? SOURCE_LIMIT : undefined,
           sidebar: renderSidebar(root, target.rel, tags, levels),

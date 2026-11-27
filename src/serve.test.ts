@@ -158,11 +158,21 @@ describe("directory listing", () => {
     expect(withIndex).toContain('<iframe class="index-frame" src="index.html"');
     expect(withIndex).toContain('<section class="readme-panel">');
     expect(withIndex.indexOf('class="index-panel"')).toBeLessThan(withIndex.indexOf('class="readme-panel"'));
-    expect(withIndex).toContain('href="index.html"');
+    expect(withIndex).toContain('<div class="panel-head"><h2 class="panel-title">index.html</h2><a class="panel-link" href="index.html">open</a></div>');
     expect(withIndex).not.toContain("custom index");
 
     const raw = await (await respond(dir, "http://localhost/index.html", { "sec-fetch-dest": "iframe" })).text();
     expect(raw).toBe("<h1>custom index</h1>");
+  });
+
+  test("a folder with only index.html still gets the preview panel", async () => {
+    const dir = fixtureDir("index-only");
+    writeFileSync(join(dir, "index.html"), "<h1>custom index</h1>");
+    const html = await (await respond(dir, "http://localhost/")).text();
+    expect(html).toContain('<table class="listing">');
+    expect(html).toContain('<section class="index-panel">');
+    expect(html).not.toContain('class="readme-panel"');
+    expect(html).not.toContain('class="files-panel files-panel-full"');
   });
 
   test("a folder without a README gives the files panel the full width", async () => {
