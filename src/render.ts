@@ -234,8 +234,8 @@ const REVIEW_TOGGLE = `<button type="button" id="serv-review-toggle" class="revi
 
 const REVIEW_BAR = `<aside class="review-bar" id="serv-review-bar" aria-label="Comments">
 <div class="review-head">
-<h2 class="review-title">Comments <span class="review-total" data-review-total>0</span></h2>
-<div class="review-actions"><button type="button" class="review-action" data-review-copy>Copy comments</button><button type="button" class="review-action" data-review-clear>Clear</button></div>
+<h2 class="review-title" tabindex="-1">Comments <span class="review-total" data-review-total>0</span></h2>
+<div class="review-actions"><button type="button" class="review-action" data-review-copy disabled>Copy comments</button><button type="button" class="review-action" data-review-clear disabled>Clear</button><span class="review-status" data-review-status role="status" aria-live="polite"></span></div>
 <button type="button" class="review-close" data-review-close title="Close comments" aria-label="Close comments">${closeIcon()}</button>
 </div>
 <div class="review-list" data-review-list></div>

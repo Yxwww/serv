@@ -8,6 +8,8 @@ import {
   groupByPath,
   lineOffsets,
   lineRangeFromOffsets,
+  lineSpan,
+  lineStartOffsets,
   makeQuoteAnchor,
   mapToSourceRange,
   parseState,
@@ -248,6 +250,24 @@ describe("lineOffsets", () => {
     expect(lineRangeFromOffsets(text, first.start, first.end)).toEqual({ start: 1, end: 1 });
     expect(lineRangeFromOffsets(text, across.start, across.end)).toEqual({ start: 2, end: 3 });
     expect(lineRangeFromOffsets(text, last.start, last.end)).toEqual({ start: 3, end: 3 });
+  });
+});
+
+describe("lineStartOffsets/lineSpan", () => {
+  test("finds line starts and matches lineOffsets spans", () => {
+    const text = "alpha\nbeta\ngamma";
+    const starts = lineStartOffsets(text);
+    expect(Array.from(starts)).toEqual([0, 6, 11]);
+    for (const [start, end] of [
+      [1, 1],
+      [2, 2],
+      [3, 3],
+      [1, 3],
+      [0, 99],
+    ] as const) {
+      expect(lineSpan(starts, text.length, start, end)).toEqual(lineOffsets(text, start, end));
+    }
+    expect(Array.from(lineStartOffsets("a\n"))).toEqual([0, 2]);
   });
 });
 

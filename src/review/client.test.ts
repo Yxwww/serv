@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   anchorFromSelection,
+  commentHref,
   commentIdFromHash,
   initReview,
   readState,
@@ -95,6 +96,12 @@ describe("hash ids", () => {
     expect(commentIdFromHash("#c=bad%ZZ")).toBe("bad%ZZ");
     expect(commentIdFromHash("#other")).toBeNull();
     expect(commentIdFromHash("")).toBeNull();
+  });
+
+  test("comment links stay on this origin for a leading-slash source path", () => {
+    const href = commentHref("/src/a b.ts", "id 1");
+    expect(href).toBe("/src/a%20b.ts#c=id%201");
+    expect(new URL(href, "http://127.0.0.1:4790").origin).toBe("http://127.0.0.1:4790");
   });
 });
 

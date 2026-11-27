@@ -3,8 +3,9 @@
 /** A path from the served root to a same-origin href, one segment at a time. */
 export function resultHref(path: string): string {
   const dir = path.endsWith("/");
-  const bare = dir ? path.slice(0, -1) : path;
-  return "/" + bare.split("/").map(encodeURIComponent).join("/") + (dir ? "/" : "");
+  const parts = path.split("/").filter(Boolean).map(encodeURIComponent);
+  const href = "/" + parts.join("/");
+  return dir && href !== "/" ? href + "/" : href;
 }
 
 /** True for inputs, textareas, selects and contenteditable elements (or their text nodes). */

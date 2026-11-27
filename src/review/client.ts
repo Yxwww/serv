@@ -12,6 +12,8 @@ import {
   groupByPath,
   lineOffsets,
   lineRangeFromOffsets,
+  lineSpan,
+  lineStartOffsets,
   makeQuoteAnchor,
   mapToSourceRange,
   parseState,
@@ -29,6 +31,16 @@ const HIGHLIGHT = "serv-review";
 const FLASH_HIGHLIGHT = "serv-review-flash";
 const COMMENT_HASH = "#c=";
 const MAX_ANCHOR_CHARS = 2000;
+const SELECTION_KEYS = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+]);
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -153,27 +165,6 @@ function textIndex(root: Element, doc: Document): TextIndex {
   };
 }
 
-function lineStartOffsets(text: string): Int32Array {
-  const starts: number[] = [0];
-  for (let i = 0; i < text.length; i++) {
-    if (text.charCodeAt(i) === 10) starts.push(i + 1);
-  }
-  return Int32Array.from(starts);
-}
-
-function lineSpan(
-  starts: Int32Array,
-  textLength: number,
-  start: number,
-  end: number,
-): { start: number; end: number } {
-  const first = Math.min(Math.max(start, 1), starts.length) - 1;
-  const final = Math.min(Math.max(end, first + 1), starts.length) - 1;
-  const startOffset = starts[first]!;
-  const endOffset = final + 1 < starts.length ? starts[final + 1]! - 1 : textLength;
-  return { start: startOffset, end: endOffset };
-}
-
 function highlightApi(): { registry: HighlightsRegistry; ctor: HighlightConstructor } | null {
   const registry = (CSS as unknown as { highlights?: HighlightsRegistry }).highlights;
   const ctor = (globalThis as unknown as { Highlight?: HighlightConstructor }).Highlight;
@@ -210,6 +201,10 @@ export function commentIdFromHash(hash: string): string | null {
   } catch {
     return raw;
   }
+}
+
+export function commentHref(path: string, id: string): string {
+  return resultHref(path) + COMMENT_HASH + encodeURIComponent(id);
 }
 
 function capChars(text: string): string {
@@ -363,11 +358,18 @@ export function initReview(
   const copyBtn = bar?.querySelector<HTMLButtonElement>("[data-review-copy]");
   const clearBtn = bar?.querySelector<HTMLButtonElement>("[data-review-clear]");
   const totalEl = bar?.querySelector<HTMLElement>("[data-review-total]");
+  const copyStatus = bar?.querySelector<HTMLElement>("[data-review-status]");
+  const title = bar?.querySelector<HTMLElement>(".review-title");
   const badge = toggleBtn?.querySelector<HTMLElement>("[data-review-badge]");
-  if (!toggleBtn || !bar || !list || !copyBtn || !clearBtn || !totalEl || !badge) return;
+  if (!toggleBtn || !bar || !list || !copyBtn || !clearBtn || !totalEl || !copyStatus || !title || !badge) {
+    return;
+  }
 
   let state: ReviewState = readState(storage);
   const missing = new Set<string>();
+  const app = document.querySelector<HTMLElement>(".app");
+  const narrow = window.matchMedia("(max-width: 799.98px)");
+  let copyStatusTimer = 0;
   const saveHint = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent) ? "⌘↵" : "Ctrl+↵";
 
   const addButton = make(document, "button", "review-add");
@@ -377,13 +379,17 @@ export function initReview(
 
   const composer = make(document, "div", "review-composer");
   composer.hidden = true;
+  composer.setAttribute("role", "dialog");
+  composer.setAttribute("aria-label", "Add comment");
   const composerInput = make(document, "textarea", "review-input");
   composerInput.rows = 3;
   composerInput.placeholder = "Write a comment…";
   composerInput.setAttribute("aria-label", "Comment");
   const composerFoot = make(document, "div", "review-composer-foot");
   const composerHint = make(document, "span", "review-hint");
+  composerHint.id = "serv-review-composer-hint";
   composerHint.textContent = `${saveHint} save · Esc cancel`;
+  composer.setAttribute("aria-describedby", composerHint.id);
   const composerCancel = make(document, "button", "review-btn");
   composerCancel.type = "button";
   composerCancel.textContent = "Cancel";
@@ -393,6 +399,7 @@ export function initReview(
   composerSave.disabled = true;
   const composerError = make(document, "p", "review-error");
   composerError.hidden = true;
+  composerError.setAttribute("role", "alert");
   composerFoot.append(composerHint, composerCancel, composerSave);
   composer.append(composerInput, composerError, composerFoot);
   document.body.append(addButton, composer);
@@ -400,6 +407,7 @@ export function initReview(
   let pending: Pending | null = null;
   let flashTimer = 0;
   let selectionRaf = 0;
+  let keyboardSelection = false;
 
   // -- open state -----------------------------------------------------------
 
@@ -412,16 +420,28 @@ export function initReview(
     toggleBtn!.setAttribute("aria-expanded", String(open));
     if (open) bar!.removeAttribute("inert");
     else bar!.setAttribute("inert", "");
+    // Below 800px the backdrop covers the page; keep keyboard and AT out of it.
+    if (app) app.inert = open && narrow.matches;
   }
 
-  function setOpen(open: boolean, persist: boolean): void {
+  function setOpen(open: boolean, persist: boolean, moveFocus = true): void {
+    const wasOpen = isOpen();
     document.documentElement.classList.toggle(REVIEW_OPEN_CLASS, open);
     syncBar();
-    if (!persist) return;
-    try {
-      storage.setItem(REVIEW_OPEN_KEY, open ? "1" : "0");
-    } catch {
-      // The class still applies for this page.
+    if (persist) {
+      try {
+        storage.setItem(REVIEW_OPEN_KEY, open ? "1" : "0");
+      } catch {
+        // The class still applies for this page.
+      }
+    }
+    if (!moveFocus || open === wasOpen) return;
+    if (open) {
+      requestAnimationFrame(() => {
+        if (isOpen()) title!.focus();
+      });
+    } else {
+      toggleBtn!.focus();
     }
   }
 
@@ -592,12 +612,16 @@ export function initReview(
     toggleBtn!.title = total > 0 ? `Comments (${total})` : "Comments";
     toggleBtn!.setAttribute("aria-label", total > 0 ? `Comments (${total})` : "Comments");
     clearBtn!.disabled = total === 0;
+    copyBtn!.disabled = total === 0;
   }
 
   function renderItem(comment: ReviewComment): HTMLLIElement {
     const item = make(document, "li", "review-item");
     item.dataset.id = comment.id;
-    if (comment.path === currentPath()) item.title = "Go to this comment";
+
+    const jump = make(document, "a", "review-jump");
+    jump.href = commentHref(comment.path, comment.id);
+    if (comment.path === currentPath()) jump.title = "Go to this comment";
 
     const head = make(document, "div", "review-item-head");
     const loc = make(document, "span", "review-loc");
@@ -608,14 +632,15 @@ export function initReview(
       note.textContent = "couldn't locate";
       head.append(note);
     }
-    item.append(head);
+    jump.append(head);
 
     const excerpt = quoteExcerpt(comment.anchor.quote);
     if (excerpt) {
       const quote = make(document, "p", "review-quote");
       quote.textContent = excerpt;
-      item.append(quote);
+      jump.append(quote);
     }
+    item.append(jump);
 
     const body = make(document, "p", "review-body");
     body.textContent = comment.body;
@@ -640,7 +665,9 @@ export function initReview(
     const groups = groupByPath(state, currentPath());
     if (groups.length === 0) {
       const empty = make(document, "p", "review-empty");
-      empty.textContent = "No comments yet. Select text in a file, then choose Comment.";
+      empty.textContent = region()
+        ? "No comments yet. Select text in a file, then choose Comment."
+        : "Open a file to select text and add a comment.";
       list!.append(empty);
       return;
     }
@@ -680,7 +707,7 @@ export function initReview(
       locateAndFlash(comment);
       return;
     }
-    location.href = resultHref(comment.path) + COMMENT_HASH + encodeURIComponent(id);
+    location.href = commentHref(comment.path, id);
   }
 
   /** Center a range, scrolling the source box first and then the page. */
@@ -737,6 +764,7 @@ export function initReview(
     save.disabled = comment.body.trim() === "";
     const error = make(document, "p", "review-error");
     error.hidden = true;
+    error.setAttribute("role", "alert");
     foot.append(hint, cancel, save);
     editor.append(input, error, foot);
 
@@ -788,6 +816,7 @@ export function initReview(
 
   function hideAddButton(): void {
     addButton.hidden = true;
+    keyboardSelection = false;
     if (composer.hidden) pending = null;
   }
 
@@ -900,6 +929,11 @@ export function initReview(
     pending = null;
     addButton.hidden = false;
     positionAddButton(rect);
+    if (keyboardSelection) {
+      // Keep the selection and let Enter open the composer.
+      keyboardSelection = false;
+      addButton.focus({ preventScroll: true });
+    }
   }
 
   function scheduleSelection(): void {
@@ -985,14 +1019,21 @@ export function initReview(
   for (const close of document.querySelectorAll("[data-review-close]")) {
     close.addEventListener("click", () => setOpen(false, true));
   }
+  bar.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+    if (event.key !== "Escape" || !composer.hidden || bar!.querySelector(".review-edit")) return;
+    event.preventDefault();
+    setOpen(false, true);
+  });
 
   copyBtn.addEventListener("click", () => {
     const root = rootPath(document);
     void copyText(document, clipboard, toMarkdown(state, today(), root === "" ? undefined : root)).then((ok) => {
-      copyBtn.textContent = ok ? "Copied" : "Copy failed";
-      window.setTimeout(() => {
-        copyBtn.textContent = "Copy comments";
-      }, 1200);
+      copyStatus.textContent = ok ? "Comments copied" : "Could not copy comments";
+      clearTimeout(copyStatusTimer);
+      copyStatusTimer = window.setTimeout(() => {
+        copyStatus.textContent = "";
+      }, 2000);
     });
   });
 
@@ -1012,6 +1053,8 @@ export function initReview(
     if (!item) return;
     const id = item.dataset.id;
     if (!id) return;
+    // The jump target is a real link; let the browser navigate it.
+    if (target.closest(".review-jump")) return;
     if (target.closest("[data-review-edit]")) {
       startEdit(item, id);
       return;
@@ -1022,6 +1065,16 @@ export function initReview(
     }
     if (target.closest(".review-edit")) return;
     goTo(id);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (!composer.hidden || isEditable(event.target) || event.isComposing || event.keyCode === 229) return;
+    if (event.shiftKey && SELECTION_KEYS.has(event.key)) keyboardSelection = true;
+  });
+  document.addEventListener("mousedown", () => { keyboardSelection = false; }, true);
+  narrow.addEventListener("change", () => {
+    syncBar();
+    if (isOpen() && narrow.matches && !bar!.contains(document.activeElement)) title!.focus();
   });
 
   addButton.addEventListener("mousedown", (event) => event.preventDefault());
@@ -1069,7 +1122,7 @@ export function initReview(
       handleHash();
       return;
     }
-    if (event.key === REVIEW_OPEN_KEY) setOpen(event.newValue === "1", false);
+    if (event.key === REVIEW_OPEN_KEY) setOpen(event.newValue === "1", false, false);
   });
 
   // -- start ----------------------------------------------------------------

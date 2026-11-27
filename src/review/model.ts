@@ -468,6 +468,29 @@ export function lineOffsets(text: string, start: number, end: number): { start: 
   return { start: startOffset, end: endOffset };
 }
 
+/** Offset of each line start, including the empty line after a final "\n". */
+export function lineStartOffsets(text: string): Int32Array {
+  const starts: number[] = [0];
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) starts.push(i + 1);
+  }
+  return Int32Array.from(starts);
+}
+
+/** Char span for 1-based inclusive lines using a precomputed start table. */
+export function lineSpan(
+  starts: Int32Array,
+  textLength: number,
+  start: number,
+  end: number,
+): { start: number; end: number } {
+  const first = Math.min(Math.max(start, 1), starts.length) - 1;
+  const final = Math.min(Math.max(end, first + 1), starts.length) - 1;
+  const startOffset = starts[first]!;
+  const endOffset = final + 1 < starts.length ? starts[final + 1]! - 1 : textLength;
+  return { start: startOffset, end: endOffset };
+}
+
 export function makeQuoteAnchor(text: string, start: number, end: number, context = 32): QuoteAnchor {
   let from = start;
   let to = end;
