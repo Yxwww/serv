@@ -18,9 +18,10 @@
   "scripts": {
     "test": "bun test",
     "start": "bun run src/cli.ts",
+    "build:icons": "bun scripts/build-file-icons.ts",
     "build:css": "tailwindcss -i ./src/styles.input.css -o ./src/styles.css --minify",
     "build:search": "bun build src/search.ts --minify --target=browser --format=esm --outfile=src/search.bundle.js",
-    "build": "bun run build:css && bun run build:search"
+    "build": "bun run build:icons && bun run build:css && bun run build:search"
   },
   "keywords": [
     "bun",
@@ -32,6 +33,7 @@
   "license": "MIT",
   "author": "Yuxi Wang",
   "devDependencies": {
+    "@tabler/icons": "3.53.0",
     "@tailwindcss/cli": "4.3.5",
     "@tailwindcss/typography": "0.5.20",
     "@types/bun": "1.4.5",

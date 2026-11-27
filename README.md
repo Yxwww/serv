@@ -247,14 +247,20 @@ files.
 `src/render.ts` builds pages, listings and viewers, `src/tree.ts` builds the
 sidebar and its lazy fragments, `src/serve.ts` does routing and content types,
 `src/types.ts` holds the extension table shared by routing and icons,
-`src/icons.ts` holds the inline SVG icons, and `src/cli.ts` handles flags, the
+`src/icons.ts` holds the shared UI icons, and `src/cli.ts` handles flags, the
 port, and opening the browser.
+
+File-type icons come from a 49-glyph subset of [Tabler Icons](https://tabler.io/icons)
+(MIT). `scripts/build-file-icons.ts` (`bun run build:icons`) maps extensions
+and special filenames to sprite ids and generates `src/file-icons.ts` and
+`src/file-icon-sprite.ts`; the sprite is served once per browser cache at
+`/?icons=<hash>` with immutable caching, and rows reference it with `<use>`.
 
 ## Credits
 
 Design tokens are from [Astryx](https://github.com/meta/astryx) by Meta
-Platforms, Inc. (MIT). Icons are from [Lucide](https://lucide.dev) (ISC). File
-ranking is from [fzf for JavaScript](https://github.com/ajitid/fzf-for-js) by
+Platforms, Inc. (MIT). File-type icons are a subset of [Tabler Icons](https://tabler.io/icons)
+(MIT). File ranking is from [fzf for JavaScript](https://github.com/ajitid/fzf-for-js) by
 Ajit (BSD-3-Clause). See `THIRD_PARTY_NOTICES.md`.
 
 ## License

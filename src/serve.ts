@@ -13,6 +13,8 @@ import {
   isTextName,
 } from "./types";
 import { highlightSource } from "./highlight";
+import { SPRITE_HASH } from "./file-icons";
+import { SPRITE } from "./file-icon-sprite";
 import {
   listEntries,
   renderBinaryViewer,
@@ -270,6 +272,19 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+/** The URL carries the content hash, so this response can be cached forever. */
+function spriteResponse(): Response {
+  return new Response(SPRITE, {
+    headers: {
+      "content-type": "image/svg+xml; charset=utf-8",
+      "content-length": String(Buffer.byteLength(SPRITE)),
+      "cache-control": "public, max-age=31536000, immutable",
+      "etag": `"${SPRITE_HASH}"`,
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
 function isFile(path: string): boolean {
   try {
     return statSync(path).isFile();
@@ -364,6 +379,12 @@ async function route(
   const url = new URL(requestUrl, "http://127.0.0.1");
   if (url.pathname === "/favicon.ico" && !isFile(join(root, "favicon.ico"))) {
     return new Response(null, { status: 204 });
+  }
+  // Reserved on the root URL only, so a real file or folder named `icons`
+  // at /icons is untouched. The response is immutable, so a stale hash must
+  // 404 rather than pin old content under a URL that claims to be current.
+  if (url.pathname === "/" && url.searchParams.has("icons")) {
+    return url.searchParams.get("icons") === SPRITE_HASH ? spriteResponse() : textResponse("Not Found\n", 404);
   }
   const target = resolveRequest(root, url.pathname);
   const rootLabel = basename(root) || root;
