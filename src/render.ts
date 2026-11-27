@@ -596,6 +596,7 @@ export function renderListing(opts: {
   rel: string;
   entries: Entry[];
   tags?: Map<string, Tag>;
+  hasIndexHtml?: boolean;
   readmeHtml?: string;
   readmeTruncated?: number;
   sidebar?: string;
@@ -651,20 +652,25 @@ ${cards}
   const list = `${table}${more("list")}`;
 
   const filesHead = `<div class="panel-head"><h2 class="panel-title">Files <span class="panel-count">${opts.entries.length}</span></h2><div class="panel-tools">${indicator}${viewToggle(activeView, showAll)}</div></div>`;
-  const filesPanel = `<section class="files-panel${opts.readmeHtml ? "" : " files-panel-full"}" data-listing-view data-view="${activeView}">${filesHead}<div class="listing-views">
+  const filesPanel = `<section class="files-panel${opts.hasIndexHtml || opts.readmeHtml ? "" : " files-panel-full"}" data-listing-view data-view="${activeView}">${filesHead}<div class="listing-views">
 <div class="listing-view" data-view-panel="list"${activeView === "grid" ? " hidden" : ""}>${list}</div>
 <div class="listing-view" data-view-panel="grid"${activeView === "list" ? " hidden" : ""}>${grid}</div>
 </div></section>`;
 
+  const indexPanel = opts.hasIndexHtml
+    ? `<section class="index-panel"><div class="panel-head"><h2 class="panel-title">index.html</h2><a class="panel-link" href="index.html">open</a></div><iframe class="index-frame" src="index.html" title="index.html preview"></iframe></section>`
+    : "";
+  const notice = opts.readmeTruncated ? truncationNotice(opts.readmeTruncated, readmeHref) : "";
+  const readmePanel = opts.readmeHtml
+    ? `<section class="readme-panel"><div class="panel-head"><h2 class="panel-title">README.md</h2><a class="panel-link" href="${escapeHtml(readmeHref)}">raw</a></div>${notice}<article class="markdown prose max-w-none">${opts.readmeHtml}</article></section>`
+    : "";
+
   let body: string;
   if (opts.entries.length === 0) {
     body = `<p class="empty-state">This folder is empty.</p>`;
-  } else if (opts.readmeHtml) {
-    const notice = opts.readmeTruncated ? truncationNotice(opts.readmeTruncated, readmeHref) : "";
-    body = `<div class="listing-split"><div class="listing-panels">
-<section class="readme-panel"><div class="panel-head"><h2 class="panel-title">README.md</h2><a class="panel-raw" href="${escapeHtml(readmeHref)}">raw</a></div>${notice}<article class="markdown prose max-w-none">${opts.readmeHtml}</article></section>
-${filesPanel}
-</div></div>`;
+  } else if (indexPanel || readmePanel) {
+    // Previews share the left column; index.html comes first.
+    body = `<div class="listing-split"><div class="listing-panels"><div class="listing-previews">${indexPanel}${readmePanel}</div>${filesPanel}</div></div>`;
   } else {
     body = filesPanel;
   }
