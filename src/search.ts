@@ -1,5 +1,5 @@
 import { Fzf, type FzfResultItem } from "fzf";
-import { fileIcon, folderIcon } from "./icons";
+import { paletteIcon } from "./icons";
 import type { Entry as FileEntry, FileList } from "./files";
 import { FILE_LIMIT, SHOW_HIDDEN_CLASS, SHOW_IGNORED_CLASS, rowHidden } from "./visibility";
 
@@ -267,8 +267,8 @@ export function initSearch(doc: Document): void {
 
       const icon = doc.createElement("span");
       icon.className = "palette-icon";
-      // Constant SVG from icons.ts, never a filename.
-      icon.innerHTML = dir ? folderIcon() : fileIcon(basename(path));
+      // Closed id set from icons.ts; the path never enters this markup.
+      icon.innerHTML = paletteIcon(path);
 
       const label = doc.createElement("span");
       label.className = "palette-path";
@@ -406,10 +406,6 @@ export function initSearch(doc: Document): void {
   doc.addEventListener("keydown", (event) => dispatchKey(event, bindings), true);
 
   // Module scripts run after parsing, so the palette markup is already present.
-}
-
-function basename(path: string): string {
-  return path.slice(path.lastIndexOf("/") + 1);
 }
 
 if (typeof document !== "undefined") initSearch(document);

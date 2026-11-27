@@ -101,6 +101,19 @@ describe("serv cli", () => {
     expect(markdown).toContain("<p>Rendered paragraph.</p>");
   });
 
+  test("listing references the cached icon sprite and the sprite serves", async () => {
+    const html = await (await page("")).text();
+    const match = /href="(\/\?icons=[^"#]+)#fi-[^"]+"/.exec(html);
+    expect(match).not.toBeNull();
+
+    const response = await page(match![1]!.replace(/^\//, ""));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/svg+xml; charset=utf-8");
+    const sprite = await response.text();
+    expect(sprite).toContain('<symbol id="fi-file-type-ts"');
+    expect(sprite).toContain('<symbol id="fi-folder"');
+  });
+
   test("TypeScript source is highlighted and escaped", async () => {
     const response = await page("app.ts");
     expect(response.status).toBe(200);
