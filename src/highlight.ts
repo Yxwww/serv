@@ -1,7 +1,8 @@
 import { createHighlighterCore, type LanguageRegistration, type ThemedToken } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
-import githubLight from "@shikijs/themes/github-light";
-import githubDark from "@shikijs/themes/github-dark";
+import githubLight from "shiki/themes/github-light.mjs";
+import githubDark from "shiki/themes/github-dark.mjs";
+import { escapeHtml } from "./render";
 
 /** Extensions with a grammar that the JavaScript regex engine handles cleanly. */
 const LANG_BY_EXT: Record<string, string> = {
@@ -61,45 +62,45 @@ const LANG_BY_EXT: Record<string, string> = {
 // Per-language modules keep the other grammars off the heap until a file needs them.
 type LangModule = { default: LanguageRegistration[] };
 const LANG_LOADERS: Record<string, () => Promise<LangModule>> = {
-  typescript: () => import("@shikijs/langs/typescript"),
-  tsx: () => import("@shikijs/langs/tsx"),
-  javascript: () => import("@shikijs/langs/javascript"),
-  jsx: () => import("@shikijs/langs/jsx"),
-  python: () => import("@shikijs/langs/python"),
-  ruby: () => import("@shikijs/langs/ruby"),
-  go: () => import("@shikijs/langs/go"),
-  rust: () => import("@shikijs/langs/rust"),
-  java: () => import("@shikijs/langs/java"),
-  c: () => import("@shikijs/langs/c"),
-  cpp: () => import("@shikijs/langs/cpp"),
-  csharp: () => import("@shikijs/langs/csharp"),
-  swift: () => import("@shikijs/langs/swift"),
-  kotlin: () => import("@shikijs/langs/kotlin"),
-  php: () => import("@shikijs/langs/php"),
-  lua: () => import("@shikijs/langs/lua"),
-  perl: () => import("@shikijs/langs/perl"),
-  bash: () => import("@shikijs/langs/bash"),
-  fish: () => import("@shikijs/langs/fish"),
-  css: () => import("@shikijs/langs/css"),
-  scss: () => import("@shikijs/langs/scss"),
-  less: () => import("@shikijs/langs/less"),
-  toml: () => import("@shikijs/langs/toml"),
-  yaml: () => import("@shikijs/langs/yaml"),
-  ini: () => import("@shikijs/langs/ini"),
-  dotenv: () => import("@shikijs/langs/dotenv"),
-  sql: () => import("@shikijs/langs/sql"),
-  xml: () => import("@shikijs/langs/xml"),
-  diff: () => import("@shikijs/langs/diff"),
-  graphql: () => import("@shikijs/langs/graphql"),
-  proto: () => import("@shikijs/langs/proto"),
-  svelte: () => import("@shikijs/langs/svelte"),
-  vue: () => import("@shikijs/langs/vue"),
-  astro: () => import("@shikijs/langs/astro"),
-  terraform: () => import("@shikijs/langs/terraform"),
-  hcl: () => import("@shikijs/langs/hcl"),
-  groovy: () => import("@shikijs/langs/groovy"),
-  properties: () => import("@shikijs/langs/properties"),
-  json: () => import("@shikijs/langs/json"),
+  typescript: () => import("shiki/langs/typescript.mjs"),
+  tsx: () => import("shiki/langs/tsx.mjs"),
+  javascript: () => import("shiki/langs/javascript.mjs"),
+  jsx: () => import("shiki/langs/jsx.mjs"),
+  python: () => import("shiki/langs/python.mjs"),
+  ruby: () => import("shiki/langs/ruby.mjs"),
+  go: () => import("shiki/langs/go.mjs"),
+  rust: () => import("shiki/langs/rust.mjs"),
+  java: () => import("shiki/langs/java.mjs"),
+  c: () => import("shiki/langs/c.mjs"),
+  cpp: () => import("shiki/langs/cpp.mjs"),
+  csharp: () => import("shiki/langs/csharp.mjs"),
+  swift: () => import("shiki/langs/swift.mjs"),
+  kotlin: () => import("shiki/langs/kotlin.mjs"),
+  php: () => import("shiki/langs/php.mjs"),
+  lua: () => import("shiki/langs/lua.mjs"),
+  perl: () => import("shiki/langs/perl.mjs"),
+  bash: () => import("shiki/langs/bash.mjs"),
+  fish: () => import("shiki/langs/fish.mjs"),
+  css: () => import("shiki/langs/css.mjs"),
+  scss: () => import("shiki/langs/scss.mjs"),
+  less: () => import("shiki/langs/less.mjs"),
+  toml: () => import("shiki/langs/toml.mjs"),
+  yaml: () => import("shiki/langs/yaml.mjs"),
+  ini: () => import("shiki/langs/ini.mjs"),
+  dotenv: () => import("shiki/langs/dotenv.mjs"),
+  sql: () => import("shiki/langs/sql.mjs"),
+  xml: () => import("shiki/langs/xml.mjs"),
+  diff: () => import("shiki/langs/diff.mjs"),
+  graphql: () => import("shiki/langs/graphql.mjs"),
+  proto: () => import("shiki/langs/proto.mjs"),
+  svelte: () => import("shiki/langs/svelte.mjs"),
+  vue: () => import("shiki/langs/vue.mjs"),
+  astro: () => import("shiki/langs/astro.mjs"),
+  terraform: () => import("shiki/langs/terraform.mjs"),
+  hcl: () => import("shiki/langs/hcl.mjs"),
+  groovy: () => import("shiki/langs/groovy.mjs"),
+  properties: () => import("shiki/langs/properties.mjs"),
+  json: () => import("shiki/langs/json.mjs"),
 };
 
 /** Past this size a single request's tokenizing and markup cost stops paying off. */
@@ -146,11 +147,6 @@ async function ensureLanguage(lang: string): Promise<boolean> {
     pendingLangs.delete(lang); // Let a later request retry the grammar.
     return false;
   }
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === '"' ? "&quot;" : "&#39;");
 }
 
 /** Shiki tokens to `<code>` contents; newlines keep the existing gutter aligned. */
