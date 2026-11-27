@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseArgs } from "./cli";
+import { folderPort, parseArgs } from "./cli";
 import { scanFiles, tagRows } from "./files";
 import { ENTRY_LIMIT, listEntries, renderListing, renderMarkdownHtml, renderMarkdownPage, renderSourcePage } from "./render";
 import { resolveInput, resolveRequest, respond, SOURCE_LIMIT } from "./serve";
@@ -980,7 +980,17 @@ describe("cli arguments", () => {
       port: 5001,
       open: true,
     });
-    expect(parseArgs([], "/work")).toEqual({ path: ".", base: "/work", port: 4400, open: true });
+    expect(parseArgs([], "/work")).toEqual({ path: ".", base: "/work", port: null, open: true });
+  });
+
+  test("derives a stable port from the folder", () => {
+    expect(folderPort("/work/docs")).toBe(folderPort("/work/docs"));
+    for (const root of ["/work/docs", "/work/src", "/"]) {
+      const port = folderPort(root);
+      expect(port).toBeGreaterThanOrEqual(4400);
+      expect(port).toBeLessThanOrEqual(4899);
+    }
+    expect(folderPort("/work/docs")).not.toBe(folderPort("/work/src"));
   });
 
   test("rejects unknown flags and bad values", () => {

@@ -46,8 +46,13 @@ serv --help                   # show usage (`-h` is the short form)
 ```
 
 It binds `127.0.0.1` only, prints the URL, and opens the browser unless
-`--no-open` is passed. The default port is 4400; if it is taken it walks
-forward to the next free one.
+`--no-open` is passed. The default port is derived from the served folder
+(4400-4899), so the same folder gets the same URL on every run; if the port is
+taken it walks forward to the next free one. Pass `--port N` to pick the first
+port yourself.
+
+On macOS with a Chromium browser running, serv reuses an existing tab for the
+same URL instead of opening a new one.
 
 `--base DIR` resolves a relative path against another directory, which is handy
 when a wrapper launches the CLI from somewhere else.

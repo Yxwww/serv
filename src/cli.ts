@@ -8,23 +8,36 @@
  * `--base` resolves a relative path against another directory, for wrappers
  * that launch the CLI from a different working directory.
  */
+import { openBrowser } from "./open";
 import { resolveInput, respond } from "./serve";
 
 const DEFAULT_PORT = 4400;
 const PORT_TRIES = 50;
+// Hash into a block of 500 ports so each folder gets a stable, memorable URL.
+const PORT_RANGE = 500;
 
 const USAGE = `usage: serv [path] [--port N] [--no-open] [--base DIR]
 
   path      file or directory to serve (default: --base, i.e. the invocation dir)
-  --port    first port to try (default ${DEFAULT_PORT}; next free one if taken)
+  --port    first port to try (default: derived from the folder, 4400-4899; next free one if taken)
   --no-open do not open the browser
   --base    resolve a relative path against this directory
 `;
 
-type Args = { path: string; base: string; port: number; open: boolean };
+type Args = { path: string; base: string; port: number | null; open: boolean };
+
+/** Deterministic port for a folder, so rerunning serv reuses the same URL. */
+export function folderPort(root: string): number {
+  let hash = 0x811c9dc5; // FNV-1a 32-bit offset basis
+  for (let i = 0; i < root.length; i++) {
+    hash ^= root.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return DEFAULT_PORT + ((hash >>> 0) % PORT_RANGE);
+}
 
 export function parseArgs(argv: string[], cwd = process.cwd()): Args {
-  const args: Args = { path: ".", base: cwd, port: DEFAULT_PORT, open: true };
+  const args: Args = { path: ".", base: cwd, port: null, open: true };
   const paths: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
@@ -75,21 +88,6 @@ function listen(root: string, startPort: number) {
   throw new Error(`no free port in ${startPort}..${startPort + PORT_TRIES - 1}`);
 }
 
-function openBrowser(url: string): void {
-  const command =
-    process.platform === "darwin"
-      ? ["open", url]
-      : process.platform === "win32"
-        ? ["cmd", "/c", "start", "", url]
-        : ["xdg-open", url];
-  try {
-    // A missing opener should not stop the server.
-    Bun.spawn(command, { stdio: ["ignore", "ignore", "ignore"] });
-  } catch {
-    // Same: the printed URL is still usable.
-  }
-}
-
 const main = async (argv: string[]): Promise<number> => {
   let args: Args;
   try {
@@ -113,7 +111,7 @@ const main = async (argv: string[]): Promise<number> => {
 
   let server;
   try {
-    server = listen(input.root, args.port);
+    server = listen(input.root, args.port ?? folderPort(input.root));
   } catch (e) {
     process.stderr.write(`serv: ${(e as Error).message}\n`);
     return 1;
