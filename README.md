@@ -209,7 +209,7 @@ different id than GitHub does.
 
 ## Comments
 
-Select text on a Markdown, source, text, or folder page and a floating
+Select text in a Markdown preview or on a source or text page and a floating
 **Comment** button appears. Comments collect in the right bar, persist in this
 browser's `localStorage`, sync across tabs, and jump back to their quoted lines.
 Comments are browser-only: serv has no write routes.

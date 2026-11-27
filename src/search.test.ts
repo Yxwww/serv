@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Fzf } from "fzf";
 import { PRE_PAINT } from "./render";
-import { dispatchKey, highlightSegments, initSearch, originalPositions, resultHref, type Binding } from "./search";
+import { dispatchKey, highlightSegments, initSearch, originalPositions, type Binding } from "./search";
+import { resultHref } from "./browser";
 
 type FakeElement = {
   tagName: string;

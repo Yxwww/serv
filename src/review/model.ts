@@ -535,17 +535,24 @@ export function findQuote(text: string, a: QuoteAnchor): { start: number; end: n
 export const MAX_QUOTE_LINES = 40;
 const MAX_SELECTED_CHARS = 200;
 
-function displayPath(path: string): string {
-  return path.charCodeAt(0) === 47 ? path.slice(1) : path;
+function oneLine(text: string): string {
+  return text.replace(/[\r\n]+/g, " ");
 }
 
-function quoteMarkdown(quote: string): string {
-  const lines = quote.replace(/\s+$/, "").split("\n");
+function displayPath(path: string): string {
+  const shown = path.charCodeAt(0) === 47 ? path.slice(1) : path;
+  return oneLine(shown);
+}
+
+function quoteMarkdown(quote: string, rangeLines: number): string {
+  const lines = quote.replace(/\s+$/, "").split(/\r\n?|\n/);
   for (let i = 0; i < lines.length; i++) lines[i] = lines[i]!.replace(/\s+$/, "");
-  const limit = lines.length > MAX_QUOTE_LINES ? MAX_QUOTE_LINES : lines.length;
+  const shown = Math.min(lines.length, MAX_QUOTE_LINES);
   const out: string[] = [];
-  for (let i = 0; i < limit; i++) out.push(lines[i] === "" ? ">" : "> " + lines[i]);
-  if (lines.length > MAX_QUOTE_LINES) out.push(`> … (${lines.length - MAX_QUOTE_LINES} more lines)`);
+  for (let i = 0; i < shown; i++) out.push(lines[i] === "" ? ">" : "> " + lines[i]);
+  const capped = rangeLines > MAX_QUOTE_LINES || lines.length > MAX_QUOTE_LINES;
+  const more = capped ? Math.max(lines.length, rangeLines) - shown : 0;
+  if (more > 0) out.push(`> … (${more} more lines)`);
   return out.join("\n");
 }
 
@@ -555,7 +562,7 @@ function collapse(text: string): string {
 
 /** Keep a body line from impersonating the export's heading or quote blocks. */
 function escapeBody(body: string): string {
-  const lines = body.split("\n");
+  const lines = body.split(/\r\n?|\n/);
   for (let i = 0; i < lines.length; i++) {
     lines[i] = lines[i]!.replace(/^(\s*)([#>])/, "$1\\$2");
   }
@@ -567,7 +574,9 @@ function commentBlock(comment: ReviewComment, index: number): string {
   const anchor = comment.anchor;
   const lines = anchor.kind === "lines" ? anchor : anchor.lines;
   let location = `${path} (no line match)`;
+  let rangeLines = 0;
   if (lines) {
+    rangeLines = lines.end - lines.start + 1;
     location =
       lines.start === lines.end ? `${path}:${lines.start}` : `${path}:${lines.start}-${lines.end}`;
   }
@@ -597,11 +606,11 @@ function commentBlock(comment: ReviewComment, index: number): string {
       selectedLine = `\nSelected: ${JSON.stringify(shown)}`;
     }
   }
-  return `### ${index}. ${location}\n${quoteMarkdown(quote)}${selectedLine}\n\n**Comment:** ${escapeBody(comment.body)}`;
+  return `### ${index}. ${location}\n${quoteMarkdown(quote, rangeLines)}${selectedLine}\n\n**Comment:** ${escapeBody(comment.body)}`;
 }
 
 export function toMarkdown(s: ReviewState, date: string, root?: string): string {
-  const header = `# Comments — ${date}\n${root === undefined ? "" : `Root: ${root}\n`}\n`;
+  const header = `# Comments — ${date}\n${root === undefined ? "" : `Root: ${oneLine(root)}\n`}\n`;
   const groups = groupByPath(s);
   if (groups.length === 0) return `${header}_No comments._\n`;
 

@@ -4,8 +4,6 @@ import type { Entry as FileEntry, FileList } from "./files";
 import { FILE_LIMIT, SHOW_HIDDEN_CLASS, SHOW_IGNORED_CLASS, rowHidden } from "./visibility";
 import { isEditable, resultHref } from "./browser";
 
-export { isEditable, resultHref };
-
 // ---------------------------------------------------------------------------
 // Pure helpers, exported so tests can prove names stay data.
 // ---------------------------------------------------------------------------

@@ -225,6 +225,10 @@ function capLines(text: string): string {
   return lines.length > MAX_QUOTE_LINES ? lines.slice(0, MAX_QUOTE_LINES).join("\n") : text;
 }
 
+function capExcerpt(text: string): string {
+  return capChars(capLines(text));
+}
+
 export type SelectionAnchorInput = {
   kind: "source" | "prose";
   text: string;
@@ -248,7 +252,7 @@ export function anchorFromSelection(input: SelectionAnchorInput): Anchor | null 
       start: lines.start,
       end: lines.end,
       quote: selected,
-      excerpt: capLines(input.text.slice(span.start, span.end)),
+      excerpt: capExcerpt(input.text.slice(span.start, span.end)),
       selected,
     };
   }
@@ -261,7 +265,7 @@ export function anchorFromSelection(input: SelectionAnchorInput): Anchor | null 
     if (mapped) {
       anchor.lines = mapped.lines;
       const span = lineOffsets(input.source, mapped.lines.start, mapped.lines.end);
-      anchor.excerpt = capLines(input.source.slice(span.start, span.end));
+      anchor.excerpt = capExcerpt(input.source.slice(span.start, span.end));
       anchor.selected = capChars(input.source.slice(mapped.start, mapped.end));
     }
   }

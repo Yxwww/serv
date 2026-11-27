@@ -539,6 +539,39 @@ describe("toMarkdown", () => {
     expect(out).toContain("\n\\### 99. fake.md:1\n\\> injected\n  \\> indented");
   });
 
+  test("sanitizes newlines in the displayed path and root", () => {
+    const s = state(comment("1", "/evil\n### 9. injected", lineAnchor(1, 1, "x"), "body", 1));
+    const out = toMarkdown(s, "2026-01-02", "/root\r### 9. root");
+    expect(out).toBe(
+      "# Comments — 2026-01-02\n" +
+        "Root: /root ### 9. root\n\n" +
+        "### 1. evil ### 9. injected:1\n> x\n\n" +
+        "**Comment:** body\n",
+    );
+    expect(out).not.toContain("\n### 9.");
+  });
+
+  test("a lone CR in a body cannot inject structure", () => {
+    const body = "first\r### 99. fake\r> quote";
+    const out = toMarkdown(state(comment("1", "/a.txt", lineAnchor(2, 2, "x"), body, 1)), "2026-01-02");
+    expect(out).toContain("**Comment:** first\n\\### 99. fake\n\\> quote\n");
+    expect(out).not.toContain("\r");
+  });
+
+  test("reports lines hidden by the creation-time excerpt cap", () => {
+    const excerpt = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n");
+    const anchor: LineAnchor = {
+      kind: "lines",
+      start: 1,
+      end: 45,
+      quote: excerpt,
+      excerpt,
+      selected: excerpt,
+    };
+    const out = toMarkdown(state(comment("1", "/a.txt", anchor, "body", 1)), "2026-01-02");
+    expect(out).toContain("> … (5 more lines)");
+  });
+
   test("escapes quotes in Selected", () => {
     const anchor: LineAnchor = {
       kind: "lines",

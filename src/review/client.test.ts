@@ -181,6 +181,22 @@ describe("selection anchors", () => {
     const wide = anchorFromSelection({ kind: "source", text: long, start: 0, end: long.length })!;
     expect(wide.quote.length).toBe(2000);
     expect(wide.selected!.length).toBe(2000);
+
+    const hugeLine = "y".repeat(500_000);
+    const huge = anchorFromSelection({
+      kind: "source",
+      text: hugeLine,
+      start: 0,
+      end: hugeLine.length,
+    })!;
+    expect(huge.excerpt!.length).toBe(2000);
+  });
+
+  test("the character cap does not split a surrogate pair", () => {
+    const text = "x".repeat(1999) + "😀tail";
+    const anchor = anchorFromSelection({ kind: "source", text, start: 0, end: text.length })!;
+    expect(anchor.selected).toBe("x".repeat(1999));
+    expect(anchor.quote).toBe("x".repeat(1999));
   });
 
   test("rejects an empty or whitespace-only selection", () => {
