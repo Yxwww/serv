@@ -405,9 +405,7 @@ async function route(
         return htmlResponse(renderTreeFragment(target.rel, tags, levels));
       }
 
-      const index = join(target.path, "index.html");
-      if (isFile(index)) return serveFile(index);
-
+      const indexFile = isFile(join(target.path, "index.html"));
       const readme = join(target.path, "README.md");
       const readmeFile = isFile(readme);
       const readmeText = readmeFile ? await readText(readme) : undefined;
@@ -426,6 +424,7 @@ async function route(
           rootLabel,
           rel: target.rel,
           entries,
+          indexHtml: indexFile,
           readmeHtml: readmeText ? renderMarkdownHtml(readmeText.text) : undefined,
           readmeTruncated: readmeText?.truncated ? SOURCE_LIMIT : undefined,
           sidebar: renderSidebar(root, target.rel, tags, levels),

@@ -136,7 +136,7 @@ describe("directory listing", () => {
     expect(html).toContain("&lt;unsafe&gt;.txt");
   });
 
-  test("index.html wins over a listing; README.md sits beside the files", async () => {
+  test("index.html previews above the listing; README.md sits beside the files", async () => {
     const dir = fixtureDir("readme");
     writeFileSync(join(dir, "README.md"), "## Severity notes\n");
 
@@ -153,8 +153,16 @@ describe("directory listing", () => {
 
     writeFileSync(join(dir, "index.html"), "<h1>custom index</h1>");
     const withIndex = await (await respond(dir, "http://localhost/")).text();
-    expect(withIndex).toContain("custom index");
-    expect(withIndex).not.toContain('<table class="listing">');
+    expect(withIndex).toContain('<table class="listing">');
+    expect(withIndex).toContain('<section class="index-panel">');
+    expect(withIndex).toContain('<iframe class="index-frame" src="index.html"');
+    expect(withIndex).toContain('<section class="readme-panel">');
+    expect(withIndex.indexOf('class="index-panel"')).toBeLessThan(withIndex.indexOf('class="readme-panel"'));
+    expect(withIndex).toContain('href="index.html"');
+    expect(withIndex).not.toContain("custom index");
+
+    const raw = await (await respond(dir, "http://localhost/index.html", { "sec-fetch-dest": "iframe" })).text();
+    expect(raw).toBe("<h1>custom index</h1>");
   });
 
   test("a folder without a README gives the files panel the full width", async () => {

@@ -68,7 +68,7 @@ when a wrapper launches the CLI from somewhere else.
 | `/folder/?showall=1` | all entries instead of the first 300 |
 | `/folder/?tree` | the sidebar's children for that folder, as an HTML fragment |
 | `/folder/?files` | every file under that folder and its containing folders, tagged hidden/ignored, as JSON for the search palette |
-| `/folder/` with `index.html` | that file instead of the listing |
+| `/folder/` with `index.html` | the listing, with the HTML page previewed in a panel |
 | `/folder/` with `README.md` | the rendered README beside the files |
 | `/image.png`, `/doc.pdf`, `/clip.mp4` | a viewer page when opened as a top-level navigation; the raw file for page subresources |
 | `/script.ts`, `/config.toml`, `/notes.txt` | a source page with line numbers |
