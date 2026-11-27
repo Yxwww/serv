@@ -1,4 +1,4 @@
-// Pure review-comment state. storage.ts/DOM wiring lives elsewhere.
+// Pure review-comment state. Browser wiring lives in client.ts.
 
 export const STORAGE_KEY = "serv:review";
 
@@ -424,16 +424,6 @@ export function mapToSourceRange(
   return { start, end, lines: lineRangeFromOffsets(source, start, end) };
 }
 
-/** Line-range view of `mapToSourceRange`, kept for the existing callers. */
-export function mapToSourceLines(
-  source: string,
-  rendered: string,
-  hintOffset?: number,
-): { start: number; end: number } | null {
-  const range = mapToSourceRange(source, rendered, hintOffset);
-  return range ? range.lines : null;
-}
-
 /** 1-based inclusive lines to char offsets, end excluding the line's "\n". */
 export function lineOffsets(text: string, start: number, end: number): { start: number; end: number } {
   let first = start;
@@ -533,13 +523,16 @@ export function findQuote(text: string, a: QuoteAnchor): { start: number; end: n
       bestScore = score;
       bestStart = index;
     }
+    if (score === a.prefix.length + a.suffix.length) {
+      return { start: index, end: index + quote.length };
+    }
     index = text.indexOf(quote, index + 1);
   }
 
   return bestStart === -1 ? null : { start: bestStart, end: bestStart + quote.length };
 }
 
-const MAX_QUOTE_LINES = 40;
+export const MAX_QUOTE_LINES = 40;
 const MAX_SELECTED_CHARS = 200;
 
 function displayPath(path: string): string {
@@ -558,6 +551,15 @@ function quoteMarkdown(quote: string): string {
 
 function collapse(text: string): string {
   return text.replace(/\s+/g, " ").trim();
+}
+
+/** Keep a body line from impersonating the export's heading or quote blocks. */
+function escapeBody(body: string): string {
+  const lines = body.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    lines[i] = lines[i]!.replace(/^(\s*)([#>])/, "$1\\$2");
+  }
+  return lines.join("\n");
 }
 
 function commentBlock(comment: ReviewComment, index: number): string {
@@ -592,10 +594,10 @@ function commentBlock(comment: ReviewComment, index: number): string {
         selected.length > MAX_SELECTED_CHARS
           ? selected.slice(0, MAX_SELECTED_CHARS) + "…"
           : selected;
-      selectedLine = `\nSelected: "${shown}"`;
+      selectedLine = `\nSelected: ${JSON.stringify(shown)}`;
     }
   }
-  return `### ${index}. ${location}\n${quoteMarkdown(quote)}${selectedLine}\n\n**Comment:** ${comment.body}`;
+  return `### ${index}. ${location}\n${quoteMarkdown(quote)}${selectedLine}\n\n**Comment:** ${escapeBody(comment.body)}`;
 }
 
 export function toMarkdown(s: ReviewState, date: string, root?: string): string {

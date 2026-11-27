@@ -46,12 +46,13 @@ export type IconId =
   | "lock"
   | "markdown"
   | "menu"
+  | "message"
   | "photo"
   | "video"
   | "x";
 
-export const SPRITE_HASH = "f3a53cafea18";
-export const SPRITE_URL = "/?icons=f3a53cafea18";
+export const SPRITE_HASH = "0db5744870ef";
+export const SPRITE_URL = "/?icons=0db5744870ef";
 
 export const EXTENSION_ICONS: ReadonlyMap<string, IconId> = new Map<string, IconId>([
   [".7z", "file-type-zip"],

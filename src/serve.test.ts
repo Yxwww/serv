@@ -1380,6 +1380,15 @@ describe("review bundle", () => {
     expect(image).not.toContain("data-serv-root");
     expect(modules(image)).toBe(1);
   });
+
+  test("the served root attribute is HTML-escaped", async () => {
+    const dir = fixtureDir('root&"<');
+    writeFileSync(join(dir, "a.ts"), "x\n");
+    const html = await (await respond(dir, "http://localhost/a.ts")).text();
+    expect(html).toContain('data-serv-root="');
+    expect(html).toContain("&amp;&quot;&lt;");
+    expect(html).not.toContain(`data-serv-root="${dir}"`);
+  });
 });
 
 describe("stylesheet", () => {

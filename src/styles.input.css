@@ -1520,6 +1520,11 @@ html.serv-show-hidden.serv-show-ignored .hidden-count {
   color: var(--color-primary);
 }
 
+/* The toggle cannot open the bar without the browser bundle. */
+html:not(.serv-js) .review-toggle {
+  display: none;
+}
+
 .review-toggle .icon {
   width: 1.15rem;
   height: 1.15rem;
@@ -1862,6 +1867,18 @@ html.review-open .review-bar {
   font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.review-error {
+  margin: 0;
+  color: #c0392b;
+  font-size: var(--text-xs);
+}
+
+@media (prefers-color-scheme: dark) {
+  .review-error {
+    color: #ff8a80;
+  }
 }
 
 .review-btn {

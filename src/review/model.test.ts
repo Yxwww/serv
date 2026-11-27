@@ -9,7 +9,6 @@ import {
   lineOffsets,
   lineRangeFromOffsets,
   makeQuoteAnchor,
-  mapToSourceLines,
   mapToSourceRange,
   parseState,
   removeComment,
@@ -252,39 +251,39 @@ describe("lineOffsets", () => {
   });
 });
 
-describe("mapToSourceLines", () => {
+describe("mapToSourceRange", () => {
   test("maps table cells, emphasis, code and link text to source lines", () => {
     const table = "| id | status |\n| --- | --- |\n| 1 | todo |\n| 2 | done |";
-    expect(mapToSourceLines(table, "idstatus")).toEqual({ start: 1, end: 1 });
-    expect(mapToSourceLines(table, "1todo")).toEqual({ start: 3, end: 3 });
-    expect(mapToSourceLines(table, "2done")).toEqual({ start: 4, end: 4 });
+    expect(mapToSourceRange(table, "idstatus")!.lines).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceRange(table, "1todo")!.lines).toEqual({ start: 3, end: 3 });
+    expect(mapToSourceRange(table, "2done")!.lines).toEqual({ start: 4, end: 4 });
 
     const prose = "This is **bold** and `code` with a [link](https://example.com/a_b).";
-    expect(mapToSourceLines(prose, "bold")).toEqual({ start: 1, end: 1 });
-    expect(mapToSourceLines(prose, "code")).toEqual({ start: 1, end: 1 });
-    expect(mapToSourceLines(prose, "link")).toEqual({ start: 1, end: 1 });
-    expect(mapToSourceLines(prose, "This is bold and code with a link.")).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceRange(prose, "bold")!.lines).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceRange(prose, "code")!.lines).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceRange(prose, "link")!.lines).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceRange(prose, "This is bold and code with a link.")!.lines).toEqual({ start: 1, end: 1 });
   });
 
   test("maps headings and returns null when nothing matches", () => {
     const md = "## Requirements\n\nBun **1.3.8 or newer**.";
-    expect(mapToSourceLines(md, "Requirements")).toEqual({ start: 1, end: 1 });
-    expect(mapToSourceLines(md, "Bun 1.3.8 or newer")).toEqual({ start: 3, end: 3 });
-    expect(mapToSourceLines(md, "absent")).toBeNull();
-    expect(mapToSourceLines(md, "")).toBeNull();
+    expect(mapToSourceRange(md, "Requirements")!.lines).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceRange(md, "Bun 1.3.8 or newer")!.lines).toEqual({ start: 3, end: 3 });
+    expect(mapToSourceRange(md, "absent")).toBeNull();
+    expect(mapToSourceRange(md, "")).toBeNull();
   });
 
   test("uses the hint to disambiguate repeated text", () => {
     const text = "target alpha\ntarget beta";
-    expect(mapToSourceLines(text, "target")).toEqual({ start: 1, end: 1 });
-    expect(mapToSourceLines(text, "target", 13)).toEqual({ start: 2, end: 2 });
+    expect(mapToSourceRange(text, "target")!.lines).toEqual({ start: 1, end: 1 });
+    expect(mapToSourceRange(text, "target", 13)!.lines).toEqual({ start: 2, end: 2 });
   });
 
-  test("mapToSourceRange exposes the raw source slice", () => {
+  test("exposes the raw source slice", () => {
     const table = "| id | status |\n| --- | --- |\n| 1 | todo |";
-    const range = mapToSourceRange(table, "1todo");
-    expect(range!.lines).toEqual({ start: 3, end: 3 });
-    expect(table.slice(range!.start, range!.end)).toBe("1 | todo");
+    const range = mapToSourceRange(table, "1todo")!;
+    expect(range.lines).toEqual({ start: 3, end: 3 });
+    expect(table.slice(range.start, range.end)).toBe("1 | todo");
   });
 });
 
@@ -524,13 +523,33 @@ describe("toMarkdown", () => {
     );
   });
 
-  test("keeps multi-line bodies verbatim", () => {
-    const s = state(comment("1", "/a.txt", lineAnchor(2, 2, "x"), "first\nsecond", 1));
+  test("keeps multi-line bodies verbatim except structural markers", () => {
+    const s = state(comment("1", "/a.txt", lineAnchor(2, 2, "x"), "first\n## fake\n> quote", 1));
     expect(toMarkdown(s, "2026-01-02")).toBe(
       "# Comments — 2026-01-02\n\n" +
         "### 1. a.txt:2\n> x\n\n" +
-        "**Comment:** first\nsecond\n",
+        "**Comment:** first\n\\## fake\n\\> quote\n",
     );
+  });
+
+  test("a forged comment body cannot inject a heading or quote", () => {
+    const body = "before\n\n### 99. fake.md:1\n> injected\n  > indented";
+    const out = toMarkdown(state(comment("1", "/a.txt", lineAnchor(2, 2, "x"), body, 1)), "2026-01-02");
+    expect(out).not.toContain("\n### 99.");
+    expect(out).toContain("\n\\### 99. fake.md:1\n\\> injected\n  \\> indented");
+  });
+
+  test("escapes quotes in Selected", () => {
+    const anchor: LineAnchor = {
+      kind: "lines",
+      start: 1,
+      end: 1,
+      quote: "todo",
+      excerpt: 'before say "todo" after',
+      selected: 'say "todo"',
+    };
+    const out = toMarkdown(state(comment("1", "/a.txt", anchor, "note", 1)), "2026-01-02");
+    expect(out).toContain('Selected: "say \\"todo\\""');
   });
 
   test("renders an empty state with and without a root", () => {

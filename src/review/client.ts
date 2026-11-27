@@ -1,7 +1,9 @@
 // Browser side of review comments: selection anchoring, highlights and the bar.
 // All persisted state lives in localStorage; there is no server write path.
 
+import { isEditable, resultHref } from "../browser";
 import {
+  MAX_QUOTE_LINES,
   STORAGE_KEY,
   addComment,
   emptyState,
@@ -21,11 +23,17 @@ import {
   type ReviewComment,
   type ReviewState,
 } from "./model";
+import { REVIEW_OPEN_CLASS, REVIEW_OPEN_KEY } from "./keys";
 
-const OPEN_KEY = "serv:review:open";
 const HIGHLIGHT = "serv-review";
 const FLASH_HIGHLIGHT = "serv-review-flash";
 const COMMENT_HASH = "#c=";
+const MAX_ANCHOR_CHARS = 2000;
+
+export interface StorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
 
 type HighlightsRegistry = Map<string, unknown>;
 type HighlightConstructor = new (...ranges: Range[]) => unknown;
@@ -37,8 +45,12 @@ type Pending = { path: string; anchor: Anchor; rect: DOMRect };
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-function make<K extends keyof HTMLElementTagNameMap>(tag: K, className: string): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
+function make<K extends keyof HTMLElementTagNameMap>(
+  doc: Document,
+  tag: K,
+  className: string,
+): HTMLElementTagNameMap[K] {
+  const node = doc.createElement(tag);
   node.className = className;
   return node;
 }
@@ -87,22 +99,173 @@ function rangeFromOffsets(root: Element, start: number, end: number): Range | nu
   return range;
 }
 
+type TextIndex = { text: string; range(start: number, end: number): Range | null };
+
+/** One TreeWalker per root; comment offsets then resolve by binary search. */
+function textIndex(root: Element, doc: Document): TextIndex {
+  const nodes: Text[] = [];
+  const starts: number[] = [];
+  let text = "";
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    const textNode = node as Text;
+    nodes.push(textNode);
+    starts.push(text.length);
+    text += textNode.data;
+    node = walker.nextNode();
+  }
+  const offsets = Int32Array.from(starts);
+
+  function locate(offset: number): { i: number; off: number } | null {
+    if (nodes.length === 0) return null;
+    if (offset <= 0) return { i: 0, off: 0 };
+    if (offset >= text.length) {
+      const i = nodes.length - 1;
+      return { i, off: nodes[i]!.data.length };
+    }
+    let lo = 0;
+    let hi = nodes.length - 1;
+    let i = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (offsets[mid]! <= offset) {
+        i = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return { i, off: offset - offsets[i]! };
+  }
+
+  return {
+    text,
+    range(start: number, end: number): Range | null {
+      const from = locate(start);
+      const to = locate(end);
+      if (!from || !to) return null;
+      const range = doc.createRange();
+      range.setStart(nodes[from.i]!, Math.min(from.off, nodes[from.i]!.data.length));
+      range.setEnd(nodes[to.i]!, Math.min(to.off, nodes[to.i]!.data.length));
+      return range;
+    },
+  };
+}
+
+function lineStartOffsets(text: string): Int32Array {
+  const starts: number[] = [0];
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) starts.push(i + 1);
+  }
+  return Int32Array.from(starts);
+}
+
+function lineSpan(
+  starts: Int32Array,
+  textLength: number,
+  start: number,
+  end: number,
+): { start: number; end: number } {
+  const first = Math.min(Math.max(start, 1), starts.length) - 1;
+  const final = Math.min(Math.max(end, first + 1), starts.length) - 1;
+  const startOffset = starts[first]!;
+  const endOffset = final + 1 < starts.length ? starts[final + 1]! - 1 : textLength;
+  return { start: startOffset, end: endOffset };
+}
+
 function highlightApi(): { registry: HighlightsRegistry; ctor: HighlightConstructor } | null {
   const registry = (CSS as unknown as { highlights?: HighlightsRegistry }).highlights;
   const ctor = (globalThis as unknown as { Highlight?: HighlightConstructor }).Highlight;
   return registry && typeof ctor === "function" ? { registry, ctor } : null;
 }
 
-function isEditableNode(node: Node | null): boolean {
-  if (!node) return false;
-  const element = node.nodeType === 1 ? (node as Element) : node.parentElement;
-  if (!element) return false;
-  const tag = element.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (element as HTMLElement).isContentEditable;
+export function readState(storage: StorageLike): ReviewState {
+  try {
+    return parseState(storage.getItem(STORAGE_KEY));
+  } catch {
+    return emptyState();
+  }
 }
 
-function encodeHref(path: string): string {
-  return "/" + path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+/** False means the caller must keep its in-memory state unchanged. */
+export function writeState(storage: StorageLike, state: ReviewState): boolean {
+  try {
+    storage.setItem(STORAGE_KEY, serializeState(state));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function rootPath(doc: Document): string {
+  return doc.body.dataset.servRoot ?? "";
+}
+
+export function commentIdFromHash(hash: string): string | null {
+  if (!hash.startsWith(COMMENT_HASH)) return null;
+  const raw = hash.slice(COMMENT_HASH.length);
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function capChars(text: string): string {
+  if (text.length <= MAX_ANCHOR_CHARS) return text;
+  let end = MAX_ANCHOR_CHARS;
+  const code = text.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end--; // don't split a surrogate pair
+  return text.slice(0, end);
+}
+
+function capLines(text: string): string {
+  const lines = text.split("\n");
+  return lines.length > MAX_QUOTE_LINES ? lines.slice(0, MAX_QUOTE_LINES).join("\n") : text;
+}
+
+export type SelectionAnchorInput = {
+  kind: "source" | "prose";
+  text: string;
+  start: number;
+  end: number;
+  source?: string;
+  hint?: number;
+};
+
+/** Anchor creation from offsets; Range/TreeWalker only supplies `start`/`end`. */
+export function anchorFromSelection(input: SelectionAnchorInput): Anchor | null {
+  const quote = input.text.slice(input.start, input.end);
+  if (quote.trim() === "") return null;
+
+  if (input.kind === "source") {
+    const selected = capChars(quote);
+    const lines = lineRangeFromOffsets(input.text, input.start, input.end);
+    const span = lineOffsets(input.text, lines.start, lines.end);
+    return {
+      kind: "lines",
+      start: lines.start,
+      end: lines.end,
+      quote: selected,
+      excerpt: capLines(input.text.slice(span.start, span.end)),
+      selected,
+    };
+  }
+
+  const anchor = makeQuoteAnchor(input.text, input.start, input.end);
+  anchor.quote = capChars(anchor.quote);
+  if (input.source) {
+    // Match the uncapped rendered text against the raw Markdown first.
+    const mapped = mapToSourceRange(input.source, quote, input.hint);
+    if (mapped) {
+      anchor.lines = mapped.lines;
+      const span = lineOffsets(input.source, mapped.lines.start, mapped.lines.end);
+      anchor.excerpt = capLines(input.source.slice(span.start, span.end));
+      anchor.selected = capChars(input.source.slice(mapped.start, mapped.end));
+    }
+  }
+  return anchor;
 }
 
 function newId(): string {
@@ -129,27 +292,54 @@ function locationLabel(comment: ReviewComment): string {
   return lines.start === lines.end ? `L${lines.start}` : `L${lines.start}-${lines.end}`;
 }
 
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // Clipboard permission or focus may be unavailable; fall back once.
-    const area = document.createElement("textarea");
-    area.value = text;
-    area.setAttribute("readonly", "");
-    area.style.position = "fixed";
-    area.style.top = "-1000px";
-    document.body.append(area);
-    area.select();
-    let ok = false;
+async function copyText(
+  doc: Document,
+  clipboard: Pick<Clipboard, "writeText"> | undefined,
+  text: string,
+): Promise<boolean> {
+  if (clipboard) {
     try {
-      ok = document.execCommand("copy");
+      await clipboard.writeText(text);
+      return true;
     } catch {
-      ok = false;
+      // Clipboard permission or focus may be unavailable; fall back once.
     }
-    area.remove();
-    return ok;
+  }
+  const area = doc.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.top = "-1000px";
+  doc.body.append(area);
+  area.select();
+  let ok = false;
+  try {
+    ok = doc.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  area.remove();
+  return ok;
+}
+
+function browserStorage(): StorageLike {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("storage unavailable");
+      },
+    };
+  }
+}
+
+function browserClipboard(): Pick<Clipboard, "writeText"> | undefined {
+  try {
+    return globalThis.navigator?.clipboard;
+  } catch {
+    return undefined;
   }
 }
 
@@ -157,7 +347,12 @@ async function copyText(text: string): Promise<boolean> {
 // Page wiring
 // ---------------------------------------------------------------------------
 
-function initReview(): void {
+export function initReview(
+  doc: Document = globalThis.document,
+  storage: StorageLike = browserStorage(),
+  clipboard: Pick<Clipboard, "writeText"> | undefined = browserClipboard(),
+): void {
+  const document = doc;
   const toggleBtn = document.getElementById("serv-review-toggle");
   const bar = document.getElementById("serv-review-bar");
   const list = bar?.querySelector<HTMLElement>("[data-review-list]");
@@ -167,61 +362,45 @@ function initReview(): void {
   const badge = toggleBtn?.querySelector<HTMLElement>("[data-review-badge]");
   if (!toggleBtn || !bar || !list || !copyBtn || !clearBtn || !totalEl || !badge) return;
 
-  let state: ReviewState = readState();
+  let state: ReviewState = readState(storage);
   const missing = new Set<string>();
   const saveHint = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent) ? "⌘↵" : "Ctrl+↵";
 
-  const addButton = make("button", "review-add");
+  const addButton = make(document, "button", "review-add");
   addButton.type = "button";
   addButton.hidden = true;
   addButton.textContent = "Comment";
 
-  const composer = make("div", "review-composer");
+  const composer = make(document, "div", "review-composer");
   composer.hidden = true;
-  const composerInput = make("textarea", "review-input");
+  const composerInput = make(document, "textarea", "review-input");
   composerInput.rows = 3;
   composerInput.placeholder = "Write a comment…";
   composerInput.setAttribute("aria-label", "Comment");
-  const composerFoot = make("div", "review-composer-foot");
-  const composerHint = make("span", "review-hint");
+  const composerFoot = make(document, "div", "review-composer-foot");
+  const composerHint = make(document, "span", "review-hint");
   composerHint.textContent = `${saveHint} save · Esc cancel`;
-  const composerCancel = make("button", "review-btn");
+  const composerCancel = make(document, "button", "review-btn");
   composerCancel.type = "button";
   composerCancel.textContent = "Cancel";
-  const composerSave = make("button", "review-btn review-btn-primary");
+  const composerSave = make(document, "button", "review-btn review-btn-primary");
   composerSave.type = "button";
   composerSave.textContent = "Comment";
   composerSave.disabled = true;
+  const composerError = make(document, "p", "review-error");
+  composerError.hidden = true;
   composerFoot.append(composerHint, composerCancel, composerSave);
-  composer.append(composerInput, composerFoot);
+  composer.append(composerInput, composerError, composerFoot);
   document.body.append(addButton, composer);
 
   let pending: Pending | null = null;
   let flashTimer = 0;
   let selectionRaf = 0;
 
-  // -- state persistence ----------------------------------------------------
-
-  function readState(): ReviewState {
-    try {
-      return parseState(localStorage.getItem(STORAGE_KEY));
-    } catch {
-      return emptyState();
-    }
-  }
-
-  function writeState(): void {
-    try {
-      localStorage.setItem(STORAGE_KEY, serializeState(state));
-    } catch {
-      // Private mode or a full quota: comments still work for this page.
-    }
-  }
-
   // -- open state -----------------------------------------------------------
 
   function isOpen(): boolean {
-    return document.documentElement.classList.contains("review-open");
+    return document.documentElement.classList.contains(REVIEW_OPEN_CLASS);
   }
 
   function syncBar(): void {
@@ -232,11 +411,11 @@ function initReview(): void {
   }
 
   function setOpen(open: boolean, persist: boolean): void {
-    document.documentElement.classList.toggle("review-open", open);
+    document.documentElement.classList.toggle(REVIEW_OPEN_CLASS, open);
     syncBar();
     if (!persist) return;
     try {
-      localStorage.setItem(OPEN_KEY, open ? "1" : "0");
+      storage.setItem(REVIEW_OPEN_KEY, open ? "1" : "0");
     } catch {
       // The class still applies for this page.
     }
@@ -250,10 +429,6 @@ function initReview(): void {
     } catch {
       return location.pathname;
     }
-  }
-
-  function rootPath(): string {
-    return document.body.dataset.servRoot ?? "";
   }
 
   function isMarkdownPage(): boolean {
@@ -357,11 +532,39 @@ function initReview(): void {
     const api = highlightApi();
     if (!api) return;
     const path = currentPath();
+    const active = region();
+    if (!active) {
+      api.registry.delete(HIGHLIGHT);
+      return;
+    }
+    const index = textIndex(active.el, document);
+    const starts = active.kind === "source" ? lineStartOffsets(index.text) : null;
     const ranges: Range[] = [];
     for (const comment of state.comments) {
       if (comment.path !== path) continue;
-      const range = resolveRange(comment, false);
-      if (range) ranges.push(range);
+      const anchor = comment.anchor;
+      if (active.kind === "source") {
+        const lines = anchor.kind === "lines" ? anchor : anchor.lines;
+        if (lines && starts) {
+          const span = lineSpan(starts, index.text.length, lines.start, lines.end);
+          const range = index.range(span.start, span.end);
+          if (range) ranges.push(range);
+        } else if (anchor.kind === "quote") {
+          const found = findQuote(index.text, anchor);
+          if (found) {
+            const range = index.range(found.start, found.end);
+            if (range) ranges.push(range);
+          }
+        }
+        continue;
+      }
+      // Rendered preview: only quote anchors exist as text there.
+      if (anchor.kind !== "quote") continue;
+      const found = findQuote(index.text, anchor);
+      if (found) {
+        const range = index.range(found.start, found.end);
+        if (range) ranges.push(range);
+      }
     }
     if (ranges.length > 0) api.registry.set(HIGHLIGHT, new api.ctor(...ranges));
     else api.registry.delete(HIGHLIGHT);
@@ -388,16 +591,16 @@ function initReview(): void {
   }
 
   function renderItem(comment: ReviewComment): HTMLLIElement {
-    const item = make("li", "review-item");
+    const item = make(document, "li", "review-item");
     item.dataset.id = comment.id;
     if (comment.path === currentPath()) item.title = "Go to this comment";
 
-    const head = make("div", "review-item-head");
-    const loc = make("span", "review-loc");
+    const head = make(document, "div", "review-item-head");
+    const loc = make(document, "span", "review-loc");
     loc.textContent = locationLabel(comment);
     head.append(loc);
     if (missing.has(comment.id)) {
-      const note = make("span", "review-missing");
+      const note = make(document, "span", "review-missing");
       note.textContent = "couldn't locate";
       head.append(note);
     }
@@ -405,21 +608,21 @@ function initReview(): void {
 
     const excerpt = quoteExcerpt(comment.anchor.quote);
     if (excerpt) {
-      const quote = make("p", "review-quote");
+      const quote = make(document, "p", "review-quote");
       quote.textContent = excerpt;
       item.append(quote);
     }
 
-    const body = make("p", "review-body");
+    const body = make(document, "p", "review-body");
     body.textContent = comment.body;
     item.append(body);
 
-    const actions = make("div", "review-item-actions");
-    const edit = make("button", "review-item-action");
+    const actions = make(document, "div", "review-item-actions");
+    const edit = make(document, "button", "review-item-action");
     edit.type = "button";
     edit.dataset.reviewEdit = "";
     edit.textContent = "Edit";
-    const remove = make("button", "review-item-action");
+    const remove = make(document, "button", "review-item-action");
     remove.type = "button";
     remove.dataset.reviewDelete = "";
     remove.textContent = "Delete";
@@ -432,7 +635,7 @@ function initReview(): void {
     list!.textContent = "";
     const groups = groupByPath(state, currentPath());
     if (groups.length === 0) {
-      const empty = make("p", "review-empty");
+      const empty = make(document, "p", "review-empty");
       empty.textContent = "No comments yet. Select text in a file, then choose Comment.";
       list!.append(empty);
       return;
@@ -440,12 +643,12 @@ function initReview(): void {
     const fragment = document.createDocumentFragment();
     const path = currentPath();
     for (const group of groups) {
-      const section = make("section", "review-group");
-      const heading = make("h3", "review-group-path");
+      const section = make(document, "section", "review-group");
+      const heading = make(document, "h3", "review-group-path");
       heading.textContent = group.path.replace(/^\//, "") || group.path;
       heading.title = group.path;
       if (group.path === path) heading.classList.add("is-current");
-      const items = make("ul", "review-items");
+      const items = make(document, "ul", "review-items");
       for (const comment of group.comments) items.append(renderItem(comment));
       section.append(heading, items);
       fragment.append(section);
@@ -473,7 +676,7 @@ function initReview(): void {
       locateAndFlash(comment);
       return;
     }
-    location.href = encodeHref(comment.path) + COMMENT_HASH + encodeURIComponent(id);
+    location.href = resultHref(comment.path) + COMMENT_HASH + encodeURIComponent(id);
   }
 
   /** Center a range, scrolling the source box first and then the page. */
@@ -513,23 +716,25 @@ function initReview(): void {
     const comment = findComment(state, id);
     if (!comment) return;
 
-    const editor = make("div", "review-edit");
-    const input = make("textarea", "review-input");
+    const editor = make(document, "div", "review-edit");
+    const input = make(document, "textarea", "review-input");
     input.rows = 3;
     input.value = comment.body;
     input.setAttribute("aria-label", "Edit comment");
-    const foot = make("div", "review-composer-foot");
-    const hint = make("span", "review-hint");
+    const foot = make(document, "div", "review-composer-foot");
+    const hint = make(document, "span", "review-hint");
     hint.textContent = `${saveHint} save · Esc cancel`;
-    const cancel = make("button", "review-btn");
+    const cancel = make(document, "button", "review-btn");
     cancel.type = "button";
     cancel.textContent = "Cancel";
-    const save = make("button", "review-btn review-btn-primary");
+    const save = make(document, "button", "review-btn review-btn-primary");
     save.type = "button";
     save.textContent = "Save";
     save.disabled = comment.body.trim() === "";
+    const error = make(document, "p", "review-error");
+    error.hidden = true;
     foot.append(hint, cancel, save);
-    editor.append(input, foot);
+    editor.append(input, error, foot);
 
     const body = item.querySelector(".review-body");
     if (body) body.replaceWith(editor);
@@ -538,8 +743,13 @@ function initReview(): void {
     function finish(): void {
       const next = input.value.trim();
       if (next === "") return;
-      state = updateComment(state, id, next);
-      writeState();
+      const nextState = updateComment(state, id, next);
+      if (!writeState(storage, nextState)) {
+        error.textContent = "Could not save. Browser storage is full or blocked.";
+        error.hidden = false;
+        return;
+      }
+      state = nextState;
       renderAll();
     }
 
@@ -549,6 +759,7 @@ function initReview(): void {
     save.addEventListener("click", finish);
     cancel.addEventListener("click", () => renderAll());
     input.addEventListener("keydown", (event) => {
+      if (event.isComposing || event.keyCode === 229) return;
       if (event.key === "Escape") {
         event.preventDefault();
         renderAll();
@@ -562,9 +773,10 @@ function initReview(): void {
   }
 
   function deleteComment(id: string): void {
-    state = removeComment(state, id);
+    const next = removeComment(state, id);
+    if (!writeState(storage, next)) return;
+    state = next;
     missing.delete(id);
-    writeState();
     renderAll();
   }
 
@@ -642,41 +854,18 @@ function initReview(): void {
     const start = offsetOf(target.el, range.startContainer, range.startOffset);
     const end = offsetOf(target.el, range.endContainer, range.endOffset);
     if (end <= start) return null;
-    const quote = text.slice(start, end);
-    if (quote.trim() === "") return null;
-    if (target.kind === "source") {
-      const lines = lineRangeFromOffsets(text, start, end);
-      const span = lineOffsets(text, lines.start, lines.end);
-      return {
-        kind: "lines",
-        start: lines.start,
-        end: lines.end,
-        quote,
-        excerpt: text.slice(span.start, span.end),
-        selected: quote,
-      };
-    }
-    const anchor = makeQuoteAnchor(text, start, end);
-    // The rendered selection has no Markdown syntax; map it back onto the raw
-    // source so exports can carry real line numbers and a greppable excerpt.
-    const source = sourceCode()?.textContent;
-    if (source) {
-      const hint = text.length > 0 ? Math.floor((start / text.length) * source.length) : undefined;
-      const mapped = mapToSourceRange(source, quote, hint);
-      if (mapped) {
-        anchor.lines = mapped.lines;
-        const span = lineOffsets(source, mapped.lines.start, mapped.lines.end);
-        anchor.excerpt = source.slice(span.start, span.end);
-        anchor.selected = source.slice(mapped.start, mapped.end);
-      }
-    }
-    return anchor;
+    // A rendered selection maps back to raw Markdown so exports can carry real
+    // line numbers and a greppable excerpt.
+    const source = target.kind === "prose" ? sourceCode()?.textContent : undefined;
+    const hint =
+      source && text.length > 0 ? Math.floor((start / text.length) * source.length) : undefined;
+    return anchorFromSelection({ kind: target.kind, text, start, end, source, hint });
   }
 
   /** Selection changes are frequent; only the rect and a cheap containment test. */
   function updateSelection(): void {
     if (!composer.hidden) return;
-    if (isEditableNode(document.activeElement)) {
+    if (isEditable(document.activeElement)) {
       hideAddButton();
       return;
     }
@@ -686,7 +875,7 @@ function initReview(): void {
       return;
     }
     const range = selection.getRangeAt(0);
-    if (isEditableNode(range.startContainer) || isEditableNode(range.endContainer)) {
+    if (isEditable(range.startContainer) || isEditable(range.endContainer)) {
       hideAddButton();
       return;
     }
@@ -741,6 +930,7 @@ function initReview(): void {
     pending = { path: currentPath(), anchor, rect: range.getBoundingClientRect() };
     composerInput.value = "";
     composerSave.disabled = true;
+    composerError.hidden = true;
     composer.hidden = false;
     addButton.hidden = true;
     positionComposer(pending.rect);
@@ -750,6 +940,7 @@ function initReview(): void {
   function closeComposer(): void {
     composer.hidden = true;
     composerInput.value = "";
+    composerError.hidden = true;
     pending = null;
     document.getSelection()?.removeAllRanges();
   }
@@ -758,32 +949,26 @@ function initReview(): void {
     if (!pending) return;
     const body = composerInput.value.trim();
     if (body === "") return;
-    state = addComment(
+    const next = addComment(
       state,
       { path: pending.path, anchor: pending.anchor, body },
       newId(),
       Date.now(),
     );
-    writeState();
+    if (!writeState(storage, next)) {
+      composerError.textContent = "Could not save. Browser storage is full or blocked.";
+      composerError.hidden = false;
+      return;
+    }
+    state = next;
     closeComposer();
     renderAll();
   }
 
   // -- hash navigation ------------------------------------------------------
 
-  function hashCommentId(): string | null {
-    const hash = location.hash;
-    if (!hash.startsWith(COMMENT_HASH)) return null;
-    const raw = hash.slice(COMMENT_HASH.length);
-    try {
-      return decodeURIComponent(raw);
-    } catch {
-      return raw;
-    }
-  }
-
   function handleHash(): void {
-    const id = hashCommentId();
+    const id = commentIdFromHash(location.hash);
     if (!id) return;
     const comment = findComment(state, id);
     if (!comment || comment.path !== currentPath()) return;
@@ -798,8 +983,8 @@ function initReview(): void {
   }
 
   copyBtn.addEventListener("click", () => {
-    const root = rootPath();
-    void copyText(toMarkdown(state, today(), root === "" ? undefined : root)).then((ok) => {
+    const root = rootPath(document);
+    void copyText(document, clipboard, toMarkdown(state, today(), root === "" ? undefined : root)).then((ok) => {
       copyBtn.textContent = ok ? "Copied" : "Copy failed";
       window.setTimeout(() => {
         copyBtn.textContent = "Copy comments";
@@ -809,9 +994,10 @@ function initReview(): void {
 
   clearBtn.addEventListener("click", () => {
     if (!confirm("Clear all comments?")) return;
-    state = emptyState();
+    const next = emptyState();
+    if (!writeState(storage, next)) return;
+    state = next;
     missing.clear();
-    writeState();
     renderAll();
   });
 
@@ -839,10 +1025,12 @@ function initReview(): void {
 
   composerInput.addEventListener("input", () => {
     composerSave.disabled = composerInput.value.trim() === "";
+    composerError.hidden = true;
   });
   composerSave.addEventListener("click", saveComment);
   composerCancel.addEventListener("click", closeComposer);
   composerInput.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === "Escape") {
       event.preventDefault();
       closeComposer();
@@ -872,12 +1060,12 @@ function initReview(): void {
 
   window.addEventListener("storage", (event) => {
     if (event.key === STORAGE_KEY || event.key === null) {
-      state = readState();
+      state = readState(storage);
       renderAll();
       handleHash();
       return;
     }
-    if (event.key === OPEN_KEY) setOpen(event.newValue === "1", false);
+    if (event.key === REVIEW_OPEN_KEY) setOpen(event.newValue === "1", false);
   });
 
   // -- start ----------------------------------------------------------------

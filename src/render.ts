@@ -8,6 +8,7 @@ import { SHOW_HIDDEN_CLASS, SHOW_IGNORED_CLASS, rowHidden } from "./visibility";
 import css from "./styles.css" with { type: "text" };
 import searchScript from "./search.bundle.js" with { type: "text" };
 import reviewScript from "./review/review.bundle.js" with { type: "text" };
+import { REVIEW_OPEN_CLASS, REVIEW_OPEN_KEY } from "./review/keys";
 
 /** One default each; the client toggles these and the head script restores them. */
 export const SHOW_HIDDEN_DEFAULT = false;
@@ -20,7 +21,7 @@ const DEFAULT_CLASSES = [
 ].filter(Boolean).join(" ");
 
 // Runs in <head>, so rows are already hidden or shown on the first paint.
-export const PRE_PAINT = `(function(){var e=document.documentElement;e.classList.add("serv-js");try{var h=localStorage.getItem("${SHOW_HIDDEN_CLASS}");var i=localStorage.getItem("${SHOW_IGNORED_CLASS}");if(h!==null)e.classList.toggle("${SHOW_HIDDEN_CLASS}",h==="1");if(i!==null)e.classList.toggle("${SHOW_IGNORED_CLASS}",i==="1")}catch(_){}try{if(e.classList.contains("serv-md-page")){var p=new URLSearchParams(location.search).get("view");var v=p==="source"||p==="rendered"?p:null;if(!v){var s=localStorage.getItem("${MD_VIEW_KEY}");if(s==="source"||s==="rendered")v=s}if(v){e.classList.toggle("serv-md-source",v==="source");e.classList.toggle("serv-md-rendered",v==="rendered")}}}catch(_){}try{if(localStorage.getItem("serv:review:open")==="1")e.classList.add("review-open")}catch(_){}})()`;
+export const PRE_PAINT = `(function(){var e=document.documentElement;e.classList.add("serv-js");try{var h=localStorage.getItem("${SHOW_HIDDEN_CLASS}");var i=localStorage.getItem("${SHOW_IGNORED_CLASS}");if(h!==null)e.classList.toggle("${SHOW_HIDDEN_CLASS}",h==="1");if(i!==null)e.classList.toggle("${SHOW_IGNORED_CLASS}",i==="1")}catch(_){}try{if(e.classList.contains("serv-md-page")){var p=new URLSearchParams(location.search).get("view");var v=p==="source"||p==="rendered"?p:null;if(!v){var s=localStorage.getItem("${MD_VIEW_KEY}");if(s==="source"||s==="rendered")v=s}if(v){e.classList.toggle("serv-md-source",v==="source");e.classList.toggle("serv-md-rendered",v==="rendered")}}}catch(_){}try{if(localStorage.getItem("${REVIEW_OPEN_KEY}")==="1")e.classList.add("${REVIEW_OPEN_CLASS}")}catch(_){}})()`;
 
 // Inline so a page never asks the server for an icon. The style element keeps
 // the square readable in dark mode when the browser paints a dark tab strip.
