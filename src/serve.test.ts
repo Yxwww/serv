@@ -449,7 +449,9 @@ describe("source view", () => {
     expect(html).not.toContain('class="md-view"');
     expect(html).not.toContain('class="md-panel"');
     expect(html).toContain('<pre class="gutter" aria-hidden="true">1\n2\n3\n4</pre>');
-    expect(html).toContain("<code>const a = 1;\nif (a &lt; 2) {");
+    expect(html).toContain('<span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">const</span>');
+    expect(html).toContain('<span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">if</span>');
+    expect(html).toContain("&lt;");
     expect(html).toContain('href="/app.ts?raw"');
 
     const raw = await respond(dir, "http://localhost/app.ts?raw");
@@ -711,13 +713,13 @@ describe("file viewers and request destination", () => {
 
     const pretty = await (await respond(dir, "http://localhost/data.json", documentNav)).text();
     expect(pretty).toContain('<pre class="gutter"');
-    expect(pretty).toContain("&quot;b&quot;: 2");
-    expect(pretty).toContain("&quot;a&quot;: 1");
+    expect(pretty).toContain("&quot;b&quot;</span>");
+    expect(pretty).toContain("&quot;a&quot;</span>");
     expect(pretty).toContain('href="/data.json?raw"');
     expect(pretty).toContain("raw ↗");
 
     const map = await (await respond(dir, "http://localhost/bundle.map", documentNav)).text();
-    expect(map).toContain("&quot;version&quot;: 3");
+    expect(map).toContain("&quot;version&quot;</span>");
 
     const broken = await (await respond(dir, "http://localhost/broken.json", documentNav)).text();
     expect(broken).toContain("{oops");

@@ -398,12 +398,12 @@ function mdToggle(active: MarkdownView): string {
 }
 
 /** The line-numbered `<pre>` block shared by source pages and Markdown source. */
-function sourceBody(text: string): string {
+function sourceBody(text: string, codeHtml?: string): string {
   const code = text.endsWith("\n") ? text.slice(0, -1) : text;
   const lineCount = code === "" ? 1 : code.split("\n").length;
   let gutter = "1";
   for (let n = 2; n <= lineCount; n++) gutter += "\n" + n;
-  return `<div class="source"><pre class="gutter" aria-hidden="true">${gutter}</pre><pre class="code"><code>${escapeHtml(code)}</code></pre></div>`;
+  return `<div class="source"><pre class="gutter" aria-hidden="true">${gutter}</pre><pre class="code"><code>${codeHtml ?? escapeHtml(code)}</code></pre></div>`;
 }
 
 export function renderMarkdownPage(opts: {
@@ -445,13 +445,14 @@ export function renderSourcePage(opts: {
   sidebar?: string;
   truncated?: number; // shown bytes; omitted when the whole file fits
   rawBlank?: boolean;
+  codeHtml?: string; // pre-highlighted <code> contents; plain when absent
 }): string {
   const rawHref = rawHrefFor(opts.rel);
   const notice = opts.truncated ? truncationNotice(opts.truncated, rawHref) : "";
   return pageShell({
     title: basename(opts.rel),
     crumbs: buildCrumbs(opts.rootLabel, opts.rel),
-    body: `${notice}${sourceBody(opts.text)}`,
+    body: `${notice}${sourceBody(opts.text, opts.codeHtml)}`,
     rawHref,
     rawBlank: opts.rawBlank,
     sidebar: opts.sidebar,

@@ -2,6 +2,7 @@ import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from 
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import {
   AUDIO_EXTS,
+  CODE_EXTS,
   HTML_EXTS,
   IMAGE_EXTS,
   JS_EXTS,
@@ -11,6 +12,7 @@ import {
   isText,
   isTextName,
 } from "./types";
+import { highlightSource } from "./highlight";
 import {
   listEntries,
   renderBinaryViewer,
@@ -461,6 +463,7 @@ async function route(
     if (isTextFile(target.path)) {
       if (raw) return serveFile(target.path, "text/plain; charset=utf-8");
       const { text, truncated } = await readText(target.path);
+      const codeHtml = CODE_EXTS.has(ext) ? await highlightSource(text, ext) : undefined;
       return htmlResponse(
         renderSourcePage({
           text,
@@ -468,6 +471,7 @@ async function route(
           rel: target.rel,
           sidebar: await sidebarFor(root, target.rel, false),
           truncated: truncated ? SOURCE_LIMIT : undefined,
+          codeHtml,
         }),
         200,
         VARY_DEST,
@@ -487,11 +491,13 @@ async function route(
     if (JSON_EXTS.has(ext)) {
       let truncated = size > SOURCE_LIMIT;
       let code = truncated ? readHead(target.path) : await Bun.file(target.path).text();
+      let parseFailed = false;
       if (!truncated) {
         try {
           code = JSON.stringify(JSON.parse(code), null, 2);
         } catch {
-          // Not valid JSON: show the text as-is.
+          // Not valid JSON: show the text as-is, without JSON token colors.
+          parseFailed = true;
         }
       }
       if (code.length > SOURCE_LIMIT) {
@@ -505,6 +511,7 @@ async function route(
         sidebar,
         truncated: truncated ? SOURCE_LIMIT : undefined,
         rawBlank: true,
+        codeHtml: parseFailed ? undefined : await highlightSource(code, ext),
       });
     } else if (IMAGE_EXTS.has(ext)) {
       let nav: ImageNav = {};
